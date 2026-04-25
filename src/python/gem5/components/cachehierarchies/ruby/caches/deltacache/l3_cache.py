@@ -29,6 +29,7 @@ import math
 from m5.objects import (
     MESI_Three_Level_L2Cache_Controller,
     MessageBuffer,
+    DeltaMapTable,
     RubyCache,
 )
 
@@ -60,6 +61,7 @@ class L3Cache(MESI_Three_Level_L2Cache_Controller):
             assoc=l3_assoc,
             start_index_bit=self.getIndexBit(num_l3Caches, cache_line_size),
         )
+        self.mapTable = DeltaMapTable()
 
         self.transitions_per_cycle = 4
         self.cluster_id = cluster_id

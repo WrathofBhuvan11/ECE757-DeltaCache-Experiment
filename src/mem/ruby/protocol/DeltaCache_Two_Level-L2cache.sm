@@ -38,8 +38,16 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+external_type(DeltaMapTable, "mem/ruby/structures/deltacache/DeltaMapTable.hh");
+
+// Declare the functions as global/external functions that take the table as a pointer
+// Note: Use 'Scalar' instead of 'int' to be safe with SLICC types
+int calculateCompressedSize(DeltaMapTable * table, DataBlock block), external="yes";
+void recordMapping(DeltaMapTable * table, Addr addr, int size), external="yes";
+
 machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
  : CacheMemory * L2cache;
+   DeltaMapTable * mapTable;
    Cycles l2_request_latency := 2;
    Cycles l2_response_latency := 2;
    Cycles to_l1_latency := 1;
@@ -445,6 +453,12 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
 
   // ACTIONS
+
+  action(recordDelta, "r", desc="Record delta mapping") {
+    // Call it as a global function, passing mapTable as the first argument
+    int compressedSize := calculateCompressedSize(mapTable, cache_entry.DataBlk);
+    recordMapping(mapTable, address, compressedSize);
+  }
 
   action(a_issueFetchToMemory, "a", desc="fetch data from memory") {
     peek(L1RequestL2Network_in, RequestMsg) {

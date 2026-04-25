@@ -1,0 +1,6 @@
+Import('*')
+
+# This tells gem5: "Look in DeltaCache.py and find the SimObject named DeltaMapTable"
+SimObject('DeltaMapTable.py', sim_objects=['DeltaMapTable'])
+
+Source('DeltaMapTable.cc')
