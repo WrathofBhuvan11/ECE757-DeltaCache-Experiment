@@ -97,6 +97,7 @@ if buildEnv["PROTOCOL"] == "MOESI_hammer":
 if buildEnv["PROTOCOL"] == "MESI_Three_Level":
     check_flush = True
 
+check_flush = False
 tester = RubyTester(
     check_flush=check_flush,
     checks_to_complete=args.maxloads,

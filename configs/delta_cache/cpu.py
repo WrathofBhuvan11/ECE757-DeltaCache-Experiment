@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015 Mark D. Hill and David A. Wood
 # All rights reserved.
 #
@@ -27,21 +26,27 @@
 #
 # Authors: Jason Power
 
-""" CPU based on MinorCPU with options for a simple gem5 configuration script
+"""CPU based on MinorCPU with options for a simple gem5 configuration script
 
 This file contains a CPU model based on MinorCPU that allows for a few options
-to be tweaked. 
+to be tweaked.
 Specifically, issue latency, op latency, and the functional unit pool.
 
 See src/cpu/MinorCPU.py for MinorCPU details.
 
 """
 
-from m5.objects import X86MinorCPU, MinorFUPool
-from m5.objects import MinorDefaultIntFU, MinorDefaultIntMulFU
-from m5.objects import MinorDefaultIntDivFU, MinorDefaultFloatSimdFU
-from m5.objects import MinorDefaultMemFU, MinorDefaultFloatSimdFU
-from m5.objects import MinorDefaultMiscFU
+from m5.objects import (
+    MinorDefaultFloatSimdFU,
+    MinorDefaultIntDivFU,
+    MinorDefaultIntFU,
+    MinorDefaultIntMulFU,
+    MinorDefaultMemFU,
+    MinorDefaultMiscFU,
+    MinorFUPool,
+    X86MinorCPU,
+)
+
 
 class MyFloatSIMDFU(MinorDefaultFloatSimdFU):
 
@@ -52,31 +57,36 @@ class MyFloatSIMDFU(MinorDefaultFloatSimdFU):
     # issueLat = 1
 
     def __init__(self, options=None):
-        super(MyFloatSIMDFU, self).__init__()
+        super().__init__()
 
         if options and options.fpu_operation_latency:
             self.opLat = options.fpu_operation_latency
 
-        if  options and options.fpu_issue_latency:
+        if options and options.fpu_issue_latency:
             self.issueLat = options.fpu_issue_latency
 
 
 class MyFUPool(MinorFUPool):
 
     def __init__(self, options=None):
-        super(MyFUPool, self).__init__()
+        super().__init__()
 
         # Copied from src/mem/MinorCPU.py
-        self.funcUnits = [MinorDefaultIntFU(), MinorDefaultIntFU(),
-                          MinorDefaultIntMulFU(), MinorDefaultIntDivFU(),
-                          MinorDefaultMemFU(), MinorDefaultMiscFU(),
-                          # My FPU
-                          MyFloatSIMDFU(options)]
+        self.funcUnits = [
+            MinorDefaultIntFU(),
+            MinorDefaultIntFU(),
+            MinorDefaultIntMulFU(),
+            MinorDefaultIntDivFU(),
+            MinorDefaultMemFU(),
+            MinorDefaultMiscFU(),
+            # My FPU
+            MyFloatSIMDFU(options),
+        ]
 
 
 class MyMinorCPU(X86MinorCPU):
 
     def __init__(self, options=None):
-        super(MyMinorCPU, self).__init__()
-        
+        super().__init__()
+
         self.executeFuncUnits = MyFUPool(options)

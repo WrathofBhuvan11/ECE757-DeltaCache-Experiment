@@ -1,6 +1,7 @@
 # import the m5 (gem5) library created when gem5 is built
-import m5
 import os
+
+import m5
 
 # import all of the SimObjects
 from m5.objects import *
@@ -10,18 +11,27 @@ from m5.objects import DeltaCacheCompressor
 m5.util.addToPath("../")
 
 # import the caches which we made (your L1Cache/L1ICache/L1DCache/L2Cache)
-from caches import L1ICache, L1DCache, L2Cache
-from cpu import MyMinorCPU
+from caches import (
+    L1DCache,
+    L1ICache,
+    L2Cache,
+)
 
 # import the SimpleOpts module
 from common import SimpleOpts
+
+from cpu import MyMinorCPU
 
 # -------------------------
 # Command-line options
 # -------------------------
 SimpleOpts.add_option("--clk", help="System clock frequency", default="1GHz")
-SimpleOpts.add_option("--fpu_operation_latency", help="fpu_operation_latency", default="6")
-SimpleOpts.add_option("--fpu_issue_latency", help="fpu_issue_latency", default="1")
+SimpleOpts.add_option(
+    "--fpu_operation_latency", help="fpu_operation_latency", default="6"
+)
+SimpleOpts.add_option(
+    "--fpu_issue_latency", help="fpu_issue_latency", default="1"
+)
 
 # ⭐ ADD THESE TWO LINES ⭐
 SimpleOpts.add_option("--cmd", help="Binary to run in SE mode", default="")
@@ -37,11 +47,12 @@ binary = os.path.expanduser(args.cmd)
 
 clk = args.clk
 
+
 # -------------------------
 # Define an L3 cache (reuse L2 wiring)
 # -------------------------
-class L3Cache(Cache): # Inherit from Cache directly
-    size = '2MiB'
+class L3Cache(Cache):  # Inherit from Cache directly
+    size = "2MiB"
     assoc = 16
     tag_latency = 20
     data_latency = 20
@@ -51,6 +62,7 @@ class L3Cache(Cache): # Inherit from Cache directly
     compressor = DeltaCacheCompressor()
     # Explicitly use CompressedTags with no extra fluff
     tags = CompressedTags()
+
 
 # -------------------------
 # Build the system

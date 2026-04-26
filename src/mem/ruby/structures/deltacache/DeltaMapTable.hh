@@ -15,23 +15,27 @@ class DeltaMapTable : public SimObject {
     DeltaMapTable(const Params &p);
 
     int calculateCompressedSize(const DataBlock& blk);
-    void recordMapping(Addr addr, int compressed_size);
+    void recordMapping(Addr addr, const DataBlock& blk);
 
   private:
     int m_block_size;
+    int m_table_entries; // table size
+    std::vector<Addr> m_direct_map_table; //the map table of m_table_entries size
+    std::vector<bool> m_valid_bits; //entry valid or not
+    uint64_t generateMapValue(const DataBlock& blk);
 };
 
 /**
  * Global Wrapper Functions
- * These are required because SLICC calls these as global functions 
+ * These are required because SLICC calls these as global functions
  * from the L2 Controller.
  */
 inline int calculateCompressedSize(DeltaMapTable& table, const DataBlock& blk) {
     return table.calculateCompressedSize(blk);
 }
 
-inline void recordMapping(DeltaMapTable& table, Addr addr, int size) {
-    table.recordMapping(addr, size);
+inline void recordMapping(DeltaMapTable& table, Addr addr, const DataBlock& blk) {
+    table.recordMapping(addr, blk);
 }
 
 } // namespace ruby

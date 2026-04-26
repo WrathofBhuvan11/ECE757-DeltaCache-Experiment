@@ -17,15 +17,15 @@ uint32_t
 DeltaCacheCompressor::calculateSBLHash(const std::vector<Chunk>& chunks)
 {
     uint32_t mapValue = 0;
-    
+
     for (const auto& word : chunks) {
         // SBL: Look at the 6 most significant bytes of every 8-byte word
         for (int i = 2; i < 8; i++) {
             uint8_t byte = (word >> (i * 8)) & 0xFF;
             bool label = (byte != 0);
-            
+
             // Simple XOR folding into a 10-bit space
-            mapValue ^= (label << (i % 10)); 
+            mapValue ^= (label << (i % 10));
         }
     }
     return mapValue & (mapTableSize - 1); // Ensure it fits the table size

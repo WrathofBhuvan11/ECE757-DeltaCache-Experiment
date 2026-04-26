@@ -38,12 +38,12 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-external_type(DeltaMapTable, "mem/ruby/structures/deltacache/DeltaMapTable.hh");
+external_type(DeltaMapTable, "mem/ruby/structures/deltacache/DeltaMapTable.hh", pointer="yes");
 
 // Declare the functions as global/external functions that take the table as a pointer
 // Note: Use 'Scalar' instead of 'int' to be safe with SLICC types
 int calculateCompressedSize(DeltaMapTable * table, DataBlock block), external="yes";
-void recordMapping(DeltaMapTable * table, Addr addr, int size), external="yes";
+void recordMapping(DeltaMapTable * table, Addr addr, DataBlock block), external="yes";
 
 machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
  : CacheMemory * L2cache;
@@ -456,8 +456,9 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   action(recordDelta, "r", desc="Record delta mapping") {
     // Call it as a global function, passing mapTable as the first argument
-    int compressedSize := calculateCompressedSize(mapTable, cache_entry.DataBlk);
-    recordMapping(mapTable, address, compressedSize);
+    //error("DEBUG: recordDelta action triggered in SLICC!");
+    //int compressedSize := calculateCompressedSize(mapTable, cache_entry.DataBlk);
+    recordMapping(mapTable, address, cache_entry.DataBlk);
   }
 
   action(a_issueFetchToMemory, "a", desc="fetch data from memory") {
@@ -1006,6 +1007,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(ISS, Mem_Data, MT_MB) {
     m_writeDataToCache;
+    //recordDelta;
     ex_sendExclusiveDataToGetSRequestors;
     s_deallocateTBE;
     o_popIncomingResponseQueue;
@@ -1013,6 +1015,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(IS, Mem_Data, SS) {
     m_writeDataToCache;
+    //recordDelta;
     e_sendDataToGetSRequestors;
     s_deallocateTBE;
     o_popIncomingResponseQueue;
@@ -1021,6 +1024,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(IM, Mem_Data, MT_MB) {
     m_writeDataToCache;
+    //recordDelta;
     ee_sendDataToGetXRequestor;
     s_deallocateTBE;
     o_popIncomingResponseQueue;
@@ -1044,6 +1048,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   // transitions from SS
   transition(SS, {L1_GETS, L1_GET_INSTR}) {
     ds_sendSharedDataToRequestor;
+    //recordDelta;
     nn_addSharer;
     set_setMRU;
     uu_profileHit;
@@ -1148,6 +1153,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   transition(MT, L1_PUTX, M) {
     ll_clearSharers;
     mr_writeDataToCacheFromRequest;
+    //recordDelta;
     t_sendWBAck;
     jj_popL1RequestQueue;
   }
@@ -1170,11 +1176,13 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(MT_IIB, {WB_Data, WB_Data_clean}, MT_SB) {
     m_writeDataToCache;
+    //recordDelta;
     o_popIncomingResponseQueue;
   }
 
   transition(MT_IB, {WB_Data, WB_Data_clean}, SS) {
     m_writeDataToCache;
+    //recordDelta;
     o_popIncomingResponseQueue;
     kd_wakeUpDependents;
   }

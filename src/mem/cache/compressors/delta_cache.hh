@@ -21,7 +21,7 @@ class DeltaCacheCompressor : public Base
     class CompData;
 
     std::unique_ptr<CompressionData> compress(
-        const std::vector<Chunk>& chunks, 
+        const std::vector<Chunk>& chunks,
         Cycles& comp_lat, Cycles& decomp_lat) override;
 
     std::vector<uint64_t> mapTable;
@@ -29,7 +29,7 @@ class DeltaCacheCompressor : public Base
 
     uint32_t calculateSBLHash(const std::vector<Chunk>& chunks);
 
-    void decompress(const CompressionData* comp_data, 
+    void decompress(const CompressionData* comp_data,
                     uint64_t* cache_line) override;
 
   public:
