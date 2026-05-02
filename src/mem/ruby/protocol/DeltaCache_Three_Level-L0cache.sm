@@ -103,7 +103,6 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     PF_IE, AccessPermission:Busy, desc="Issued GETM, have not seen response yet";
 
     // LL/SC states
-    LLSC_E, AccessPermission:Read_Only, desc="a L1 cache entry Exclusive (LL/SC locked)";
     LLSC_M, AccessPermission:Read_Write, desc="a L1 cache entry Modified (LL/SC locked)";
 
     // Flush states
@@ -1039,29 +1038,6 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     k_popMandatoryQueue;
   }
 
-  transition(S, Store, SM) {
-    i_allocateTBE;
-    c_issueUPGRADE;
-    uu_profileDataMiss;
-    k_popMandatoryQueue;
-  }
-
-  transition(S, Load_Linked, SM) {
-    i_allocateTBE;
-    ll_markLoadLinked;
-    c_issueUPGRADE;
-    uu_profileDataMiss;
-    k_popMandatoryQueue;
-  }
-
-  transition(E, Load_Linked, LLSC_E) {
-    h_load_hit;
-    uu_profileDataHit;
-    pph_observePfHit;
-    ll_scheduleLoadLinkedLockTimeout;
-    k_popMandatoryQueue;
-  }
-
   transition(S, {L0_Replacement,PF_L0_Replacement}, I) {
     forward_eviction_to_cpu;
     ff_deallocateCacheBlock;
@@ -1139,17 +1115,9 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     kd_wakeUpDependents;
   }
 
-  // store conditionals
-
-  transition({I,S,M,LLSC_E,LLSC_M}, Failed_SC) {
-    // IS,IM,SM don't handle store conditionals
-    hhc_storec_fail;
-    k_popMandatoryQueue;
-  }
-
   // prefetcher
 
-  transition({Inst_IS, IS, IM, SM, PF_Inst_IS, PF_IS, PF_IE, LLSC_E, LLSC_M}, PF_L0_Replacement) {
+  transition({Inst_IS, IS, IM, SM, PF_Inst_IS, PF_IS, LLSC_M}, PF_L0_Replacement) {
      z_stallAndWaitOptionalQueue;
   }
 
