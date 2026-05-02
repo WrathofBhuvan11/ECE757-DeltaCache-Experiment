@@ -28,9 +28,9 @@
 
 // CoherenceRequestType
 enumeration(CoherenceRequestType, desc="...") {
-  GETX,      desc="Get eXclusive";
   GETS,      desc="Get Shared";
-  PUTX,      desc="Put eXclusive";
+  GETM,      desc="Get Modified";
+  PUTM,      desc="Write Modified"
   WB_ACK,    desc="Writeback ack";
   WB_NACK,   desc="Writeback neg. ack";
   INV,       desc="Invalidation";
@@ -40,10 +40,7 @@ enumeration(CoherenceRequestType, desc="...") {
 enumeration(CoherenceResponseType, desc="...") {
   ACK,               desc="ACKnowledgment, responder doesn't have a copy";
   DATA,              desc="Data";
-  DATA_EXCLUSIVE_CLEAN, desc="Data, no other processor has a copy, data is clean";
-  DATA_EXCLUSIVE_DIRTY, desc="Data, no other processor has a copy, data is dirty";
   UNBLOCK,           desc="Unblock";
-  UNBLOCK_EXCLUSIVE, desc="Unblock, we're in E/M";
   WRITEBACK_CLEAN,   desc="Clean writeback (no data)";
   WRITEBACK_DIRTY,   desc="Dirty writeback (contains data)";
   WRITEBACK,         desc="Generic writeback (contains data)";
@@ -59,8 +56,8 @@ structure(RequestMsg, desc="...", interface="Message") {
   MessageSizeType MessageSize, desc="size category of the message";
 
   bool functionalRead(Packet *pkt) {
-    // Valid data block is only present in PUTX messages
-    if (Type == CoherenceRequestType:PUTX) {
+    // Valid data block is only present in PUTM messages
+    if (Type == CoherenceRequestType:PUTM) {
         return testAndRead(addr, DataBlk, pkt);
     }
     return false;

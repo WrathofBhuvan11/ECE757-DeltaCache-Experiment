@@ -28,7 +28,7 @@ import math
 
 from m5.objects import (
     ClockDomain,
-    MESI_Three_Level_L1Cache_Controller,
+    DeltaCache_L1Cache_Controller,
     MessageBuffer,
     RubyCache,
     RubyPrefetcher,
@@ -41,7 +41,7 @@ from .....processors.abstract_core import AbstractCore
 
 # L1Cache_Controller is ruby backend's terminology corresponding to
 # L2Cache in stdlib's terms
-class L2Cache(MESI_Three_Level_L1Cache_Controller):
+class L2Cache(Delta_Cache_L1Cache_Controller):
     _version = 0
 
     @classmethod
@@ -55,7 +55,7 @@ class L2Cache(MESI_Three_Level_L1Cache_Controller):
         l2_assoc,
         network,
         core: AbstractCore,
-        num_l3Caches,
+        num_l2Caches,
         cache_line_size,
         cluster_id,
         target_isa: ISA,

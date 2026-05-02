@@ -25,7 +25,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from m5.objects import (
-    MESI_Three_Level_Directory_Controller,
+    DeltaCache_Directory_Controller,
     MessageBuffer,
     RubyDirectoryMemory,
 )
@@ -33,7 +33,7 @@ from m5.objects import (
 from ......utils.override import overrides
 
 
-class Directory(MESI_Three_Level_Directory_Controller):
+class Directory(DeltaCache_Directory_Controller):
     @classmethod
     def versionCount(cls):
         cls._version += 1  # Use count for this particular type

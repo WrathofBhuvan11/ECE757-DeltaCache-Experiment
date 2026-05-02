@@ -74,10 +74,6 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     // but it cannot write to it.
     S, AccessPermission:Read_Only, desc="Shared";
 
-    // The cache entry is in exclusive mode. The processor can read this
-    // entry. It can write to this entry without informing the directory.
-    // On writing, the entry moves to M state.
-    E, AccessPermission:Read_Only, desc="Exclusive";
 
     // The processor has read and write permissions on this entry.
     M, AccessPermission:Read_Write, desc="Modified";
@@ -94,17 +90,17 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
 
     // The cache controller has requested that this entry be fetched in
     // modify state so that the processor can read/write it.
-    IM, AccessPermission:Busy, desc="Issued GETX, have not seen response yet";
+    IM, AccessPermission:Busy, desc="Issued GETM, have not seen response yet";
 
     // The cache controller had read permission over the entry. But now the
     // processor needs to write to it. So, the controller has requested for
     // write permission.
-    SM, AccessPermission:Read_Only, desc="Issued GETX, have not seen response yet";
+    SM, AccessPermission:Read_Only, desc="Issued GETM, have not seen response yet";
 
     // Transient states in which block is being prefetched
     PF_Inst_IS, AccessPermission:Busy, desc="Issued GETS, have not seen response yet";
     PF_IS, AccessPermission:Busy, desc="Issued GETS, have not seen response yet";
-    PF_IE, AccessPermission:Busy, desc="Issued GETX, have not seen response yet";
+    PF_IE, AccessPermission:Busy, desc="Issued GETM, have not seen response yet";
 
     // LL/SC states
     LLSC_E, AccessPermission:Read_Only, desc="a L1 cache entry Exclusive (LL/SC locked)";
@@ -130,13 +126,12 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     L0_Replacement,  desc="L0 Replacement", format="!r";
 
     // requests forwarded from other processors
-    Fwd_GETX,   desc="GETX from other processor";
+    Fwd_GETM,   desc="GETM from other processor";
     Fwd_GETS,   desc="GETS from other processor";
     Fwd_GET_INSTR,   desc="GET_INSTR from other processor";
 
     // data arrives from L1 cache
     Data,               desc="Data for processor";
-    Data_Exclusive,     desc="Data for processor";
     Data_Stale,         desc="Data for processor, but not for storage";
 
     Ack,        desc="Ack for processor";
@@ -149,12 +144,10 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     PF_L0_Replacement, desc="L0 Replacement caused by pretcher", format="!pr";
     PF_Load,         desc="Load request from prefetcher";
     PF_Ifetch,       desc="Instruction fetch request from prefetcher";
-    PF_Store,        desc="Exclusive load request from prefetcher";
     PF_Bad_Addr,     desc="Throw away prefetch request due to bad address generation";
 
     // LL/SC lock transitions
     Load_Linked,         desc="Load-Linked request from the home processor";
-    LLSC_Data_Exclusive, desc="Data for processor (start LL/SC  lock timer)";
     LLSC_Timeout,        desc="LL/SC lock timeout";
 
     // Flush transitions
@@ -466,13 +459,7 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
         Entry cache_entry := getCacheEntry(in_msg.addr);
         TBE tbe := TBEs[in_msg.addr];
 
-        if(in_msg.Class == CoherenceClass:DATA_EXCLUSIVE) {
-            if (isLoadLinked(tbe)) {
-              trigger(Event:LLSC_Data_Exclusive, in_msg.addr, cache_entry, tbe);
-            } else {
-              trigger(Event:Data_Exclusive, in_msg.addr, cache_entry, tbe);
-            }
-        } else if(in_msg.Class == CoherenceClass:DATA) {
+        if(in_msg.Class == CoherenceClass:DATA) {
             trigger(Event:Data, in_msg.addr, cache_entry, tbe);
         } else if(in_msg.Class == CoherenceClass:STALE_DATA) {
             trigger(Event:Data_Stale, in_msg.addr, cache_entry, tbe);
@@ -484,10 +471,9 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
           trigger(Event:InvOwn, in_msg.addr, cache_entry, tbe);
         } else if (in_msg.Class == CoherenceClass:INV_ELSE) {
           trigger(Event:InvElse, in_msg.addr, cache_entry, tbe);
-        } else if (in_msg.Class == CoherenceClass:GETX ||
-                   in_msg.Class == CoherenceClass:UPGRADE) {
-          // upgrade transforms to GETX due to race
-          trigger(Event:Fwd_GETX, in_msg.addr, cache_entry, tbe);
+        } else if (in_msg.Class == CoherenceClass:GETM) {
+          // upgrade transforms to GETM due to race
+          trigger(Event:Fwd_GETM, in_msg.addr, cache_entry, tbe);
         } else if (in_msg.Class == CoherenceClass:GETS) {
           trigger(Event:Fwd_GETS, in_msg.addr, cache_entry, tbe);
         } else if (in_msg.Class == CoherenceClass:GET_INSTR) {
@@ -615,11 +601,11 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     }
   }
 
-  action(b_issueGETX, "b", desc="Issue GETX") {
+  action(b_issueGETM, "b", desc="Issue GETM") {
     peek(mandatoryQueue_in, RubyRequest) {
       enqueue(requestNetwork_out, CoherenceMsg, request_latency) {
         out_msg.addr := address;
-        out_msg.Class := CoherenceClass:GETX;
+        out_msg.Class := CoherenceClass:GETM;
         out_msg.Sender := machineID;
         DPRINTF(RubySlicc, "%s\n", machineID);
         out_msg.Dest := createMachineID(MachineType:L1Cache, version);
@@ -632,21 +618,6 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     }
   }
 
-  action(c_issueUPGRADE, "c", desc="Issue GETX") {
-    peek(mandatoryQueue_in, RubyRequest) {
-      enqueue(requestNetwork_out, CoherenceMsg, request_latency) {
-        out_msg.addr := address;
-        out_msg.Class := CoherenceClass:UPGRADE;
-        out_msg.Sender := machineID;
-        out_msg.Dest := createMachineID(MachineType:L1Cache, version);
-
-        DPRINTF(RubySlicc, "address: %#x, destination: %s\n",
-                address, out_msg.Dest);
-        out_msg.MessageSize := MessageSizeType:Control;
-        out_msg.AccessMode := in_msg.AccessMode;
-      }
-    }
-  }
 
   action(f_sendFlushToL1, "fs", desc="Send flush request to the L1 cache") {
     enqueue(requestNetwork_out, CoherenceMsg, response_latency) {
@@ -723,11 +694,11 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     }
   }
 
-  action(g_issuePUTX, "g", desc="Relinquish line to the L1 cache") {
+  action(g_issuePUTM, "g", desc="Relinquish line to the L1 cache") {
     enqueue(requestNetwork_out, CoherenceMsg, response_latency) {
       assert(is_valid(cache_entry));
       out_msg.addr := address;
-      out_msg.Class := CoherenceClass:PUTX;
+      out_msg.Class := CoherenceClass:PUTM;
       out_msg.Dirty := cache_entry.Dirty;
       out_msg.Sender:= machineID;
       out_msg.Dest := createMachineID(MachineType:L1Cache, version);
@@ -924,11 +895,11 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     }
   }
 
-  action(pb_issuePfGETX, "pb", desc="Issue prefetch GETX") {
+  action(pb_issuePfGETM, "pb", desc="Issue prefetch GETM") {
     peek(optionalQueue_in, RubyRequest) {
       enqueue(requestNetwork_out, CoherenceMsg, request_latency) {
         out_msg.addr := address;
-        out_msg.Class := CoherenceClass:GETX;
+        out_msg.Class := CoherenceClass:GETM;
         out_msg.Sender := machineID;
         DPRINTF(RubySlicc, "%s\n", machineID);
         out_msg.Dest := createMachineID(MachineType:L1Cache, version);
@@ -1007,7 +978,7 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     z_stallAndWaitMandatoryQueue;
   }
 
-  transition({LLSC_E, LLSC_M, I_F, V_F}, {Fwd_GETS, Fwd_GETX, Fwd_GET_INSTR, InvOwn, InvElse}) {
+  transition({LLSC_E, LLSC_M, I_F, V_F}, {Fwd_GETS, Fwd_GETM, Fwd_GET_INSTR, InvOwn, InvElse}) {
     z_stallAndWaitMessageBufferQueue;
   }
 
@@ -1025,7 +996,7 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     oo_allocateDCacheBlock;
     i_allocateTBE;
     ll_markLoadLinked;
-    b_issueGETX;
+    b_issueGETM;
     uu_profileDataMiss;
     po_observeMiss;
     k_popMandatoryQueue;
@@ -1040,14 +1011,6 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     k_popMandatoryQueue;
   }
 
-  transition(I, Store, IM) {
-    oo_allocateDCacheBlock;
-    i_allocateTBE;
-    b_issueGETX;
-    uu_profileDataMiss;
-    po_observeMiss;
-    k_popMandatoryQueue;
-  }
 
   transition({I, IS, IM, Inst_IS}, {InvOwn, InvElse}) {
     forward_eviction_to_cpu;
@@ -1112,40 +1075,15 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
   }
 
   // Transitions from Exclusive
-  transition({E,M}, Store, M) {
-    hh_store_hit;
-    uu_profileDataHit;
-    pph_observePfHit;
-    k_popMandatoryQueue;
-  }
-
-  transition(E, {L0_Replacement,PF_L0_Replacement}, I) {
-    forward_eviction_to_cpu;
-    g_issuePUTX;
-    ff_deallocateCacheBlock;
-  }
-
-  transition(E, {InvOwn, InvElse, Fwd_GETX}, I) {
-    // don't send data
-    forward_eviction_to_cpu;
-    fi_sendInvAck;
-    ff_deallocateCacheBlock;
-    l_popRequestQueue;
-  }
-
-  transition(E, {Fwd_GETS, Fwd_GET_INSTR}, S) {
-    f_sendDataToL1;
-    l_popRequestQueue;
-  }
-
+  
   // Transitions from Modified
   transition(M, {L0_Replacement,PF_L0_Replacement}, I) {
     forward_eviction_to_cpu;
-    g_issuePUTX;
+    g_issuePUTM;
     ff_deallocateCacheBlock;
   }
 
-  transition(M, {InvOwn, InvElse, Fwd_GETX}, I) {
+  transition(M, {InvOwn, InvElse, Fwd_GETM}, I) {
     forward_eviction_to_cpu;
     f_sendDataToL1;
     ff_deallocateCacheBlock;
@@ -1173,22 +1111,6 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     kd_wakeUpDependents;
   }
 
-  transition(IS, Data_Exclusive, E) {
-    u_writeDataToCache;
-    hx_load_hit;
-    s_deallocateTBE;
-    o_popIncomingResponseQueue;
-    kd_wakeUpDependents;
-  }
-
-  transition(IS, LLSC_Data_Exclusive, LLSC_E) {
-    u_writeDataToCache;
-    hx_load_hit;
-    s_deallocateTBE;
-    ll_scheduleLoadLinkedLockTimeout;
-    o_popIncomingResponseQueue;
-    kd_wakeUpDependents;
-  }
 
   transition(IS, Data_Stale, I) {
     u_writeDataToCache;
@@ -1208,14 +1130,6 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     kd_wakeUpDependents;
   }
 
-  transition(Inst_IS, Data_Exclusive, E) {
-    u_writeInstToCache;
-    hx_ifetch_hit;
-    s_deallocateTBE;
-    o_popIncomingResponseQueue;
-    kd_wakeUpDependents;
-  }
-
   transition(Inst_IS, Data_Stale, I) {
     u_writeInstToCache;
     hx_ifetch_hit;
@@ -1225,26 +1139,9 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     kd_wakeUpDependents;
   }
 
-  transition({IM,SM}, Data_Exclusive, M) {
-    u_writeDataToCache;
-    hhx_store_hit;
-    s_deallocateTBE;
-    o_popIncomingResponseQueue;
-    kd_wakeUpDependents;
-  }
-
-  transition({IM, SM}, LLSC_Data_Exclusive, LLSC_M) {
-    u_writeDataToCache;
-    hx_load_hit;
-    s_deallocateTBE;
-    ll_scheduleLoadLinkedLockTimeout;
-    o_popIncomingResponseQueue;
-    kd_wakeUpDependents;
-  }
-
   // store conditionals
 
-  transition({I,S,E,M,LLSC_E,LLSC_M}, Failed_SC) {
+  transition({I,S,M,LLSC_E,LLSC_M}, Failed_SC) {
     // IS,IM,SM don't handle store conditionals
     hhc_storec_fail;
     k_popMandatoryQueue;
@@ -1295,18 +1192,6 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     k_popMandatoryQueue;
   }
 
-  transition(I, PF_Store, PF_IE) {
-    oo_allocateDCacheBlock;
-    i_allocateTBE;
-    pb_issuePfGETX;
-    pq_popPrefetchQueue;
-  }
-
-  transition(PF_IE, Store, IM) {
-    uu_profileDataMiss;
-    ppm_observePfMiss;
-    k_popMandatoryQueue;
-  }
 
   transition({PF_Inst_IS, PF_IS, PF_IE}, {InvOwn, InvElse}) {
     fi_sendInvAck;
@@ -1321,13 +1206,6 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     kd_wakeUpDependents;
   }
 
-  transition(PF_IS, Data_Exclusive, E) {
-    u_writeDataToCache;
-    s_deallocateTBE;
-    mp_markPrefetched;
-    o_popIncomingResponseQueue;
-    kd_wakeUpDependents;
-  }
 
   transition(PF_IS, Data_Stale, I) {
     u_writeDataToCache;
@@ -1346,53 +1224,11 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     kd_wakeUpDependents;
   }
 
-  transition(PF_Inst_IS, Data_Exclusive, E) {
-    u_writeInstToCache;
-    s_deallocateTBE;
-    mp_markPrefetched;
-    o_popIncomingResponseQueue;
-    kd_wakeUpDependents;
-  }
-
-  transition(PF_IE, Data_Exclusive, E) {
-    u_writeDataToCache;
-    s_deallocateTBE;
-    mp_markPrefetched;
-    o_popIncomingResponseQueue;
-    kd_wakeUpDependents;
-  }
-
   transition(I, PF_Bad_Addr) {
     pq_popPrefetchQueue;
   }
 
   // Transitions from LLSC_E and LLSC_M
-
-  transition({LLSC_E, LLSC_M}, {Load, Load_Linked}) {
-    h_load_hit;
-    uu_profileDataHit;
-    pph_observePfHit;
-    k_popMandatoryQueue;
-  }
-
-  transition({LLSC_E, LLSC_M}, Ifetch) {
-    h_ifetch_hit;
-    uu_profileInstHit;
-    pph_observePfHit;
-    k_popMandatoryQueue;
-  }
-
-  transition({LLSC_E, LLSC_M}, Store, LLSC_M) {
-    hh_store_hit;
-    uu_profileDataHit;
-    pph_observePfHit;
-    k_popMandatoryQueue;
-  }
-
-  transition(LLSC_E, LLSC_Timeout, E) {
-    ll_unsetLoadLinkedLockTimer;
-    kd_wakeUpDependents;
-  }
 
   transition(LLSC_M, LLSC_Timeout, M) {
     ll_unsetLoadLinkedLockTimer;
@@ -1403,12 +1239,6 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
   transition(I, Flush, I_F) {
     i_allocateTBE_flush;
     f_sendFlushNPToL1;
-    k_popMandatoryQueue;
-  }
-
-  transition({S, E, M}, Flush, V_F) {
-    i_allocateTBE;
-    f_sendFlushToL1;
     k_popMandatoryQueue;
   }
 
@@ -1429,11 +1259,4 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     kd_wakeUpDependents;
   }
 
-  transition({E, M}, External_Flush_Data, I) {
-    forward_eviction_to_cpu;
-    f_sendFlushDatatoL1;
-    ff_deallocateCacheBlock;
-    o_popIncomingResponseQueue;
-    kd_wakeUpDependents;
-  }
 }

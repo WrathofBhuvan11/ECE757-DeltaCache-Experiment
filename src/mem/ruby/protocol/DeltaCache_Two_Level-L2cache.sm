@@ -94,8 +94,8 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     IM, AccessPermission:Busy, desc="L2 idle, got L1_GETX, issued memory fetch, have not seen response(s) yet";
 
     // Blocking states
-    SS_MB, AccessPermission:Busy, desc="Blocked for L1_GETX from SS";
-    MT_MB, AccessPermission:Busy, desc="Blocked for L1_GETX from MT";
+    SS_MB, AccessPermission:Busy, desc="Blocked for L1_GETM from SS";
+    MT_MB, AccessPermission:Busy, desc="Blocked for L1_GETM from MT";
 
     MT_IIB, AccessPermission:Busy, desc="Blocked for L1_GETS from MT, waiting for unblock and data";
     MT_IB, AccessPermission:Busy, desc="Blocked for L1_GETS from MT, got unblock, waiting for data";
@@ -113,12 +113,9 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     // events initiated by the local L1s
     L1_GET_INSTR,            desc="a L1I GET INSTR request for a block maped to us";
     L1_GETS,                 desc="a L1D GETS request for a block maped to us";
-    L1_GETX,                 desc="a L1D GETX request for a block maped to us";
-    L1_UPGRADE,                 desc="a L1D GETX request for a block maped to us";
+    L1_GETM,                 desc="a L1D GETM request for a block maped to us";
 
-    L1_PUTX,                 desc="L1 replacing data";
-    L1_PUTX_old,             desc="L1 replacing data, but no longer sharer";
-
+    L1_PUTM,                 desc="L1 replacing data";
     // events initiated by this L2
     L2_Replacement,     desc="L2 Replacement", format="!r";
     L2_Replacement_clean,     desc="L2 Replacement, but data is clean", format="!r";
@@ -134,7 +131,6 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     Ack_all,      desc="writeback ack";
 
     Unblock, desc="Unblock from L1 requestor";
-    Exclusive_Unblock, desc="Unblock from L1 requestor";
 
     MEM_Inv, desc="Invalidation from directory";
 
@@ -288,19 +284,10 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
       return Event:L1_GETS;
     } else if(type == CoherenceRequestType:GET_INSTR) {
       return Event:L1_GET_INSTR;
-    } else if (type == CoherenceRequestType:GETX) {
-      return Event:L1_GETX;
-    } else if (type == CoherenceRequestType:UPGRADE) {
-      if ( is_valid(cache_entry) && cache_entry.Sharers.isElement(requestor) ) {
-        return Event:L1_UPGRADE;
-      } else {
-        return Event:L1_GETX;
-      }
-    } else if (type == CoherenceRequestType:PUTX) {
-      if (isSharer(addr, requestor, cache_entry)) {
-        return Event:L1_PUTX;
-      } else {
-        return Event:L1_PUTX_old;
+    } else if (type == CoherenceRequestType:GETM) {
+      return Event:L1_GETM;
+    } else if (type == CoherenceRequestType:PUTM) {
+      return Event:L1_PUTM;
       }
     } else if (type == CoherenceRequestType:FLUSH) {
       return Event:Flush;
@@ -543,25 +530,6 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     }
   }
 
-  action(dd_sendExclusiveDataToRequestor, "dd", desc="Send data from cache to reqeustor") {
-    peek(L1RequestL2Network_in, RequestMsg) {
-      enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
-        assert(is_valid(cache_entry));
-        out_msg.addr := address;
-        out_msg.Type := CoherenceResponseType:DATA_EXCLUSIVE;
-        out_msg.Sender := machineID;
-        out_msg.Destination.add(in_msg.Requestor);
-        out_msg.DataBlk := cache_entry.DataBlk;
-        out_msg.MessageSize := MessageSizeType:Response_Data;
-
-        out_msg.AckCount := 0 - cache_entry.Sharers.count();
-        if (cache_entry.Sharers.isElement(in_msg.Requestor)) {
-          out_msg.AckCount := out_msg.AckCount + 1;
-        }
-      }
-    }
-  }
-
   action(ds_sendSharedDataToRequestor, "ds", desc="Send data from cache to reqeustor") {
     peek(L1RequestL2Network_in, RequestMsg) {
       enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
@@ -591,21 +559,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     }
   }
 
-  action(ex_sendExclusiveDataToGetSRequestors, "ex", desc="Send data from cache to all GetS IDs") {
-    assert(is_valid(tbe));
-    assert(tbe.L1_GetS_IDs.count() == 1);
-    enqueue(responseL2Network_out, ResponseMsg, to_l1_latency) {
-      assert(is_valid(cache_entry));
-      out_msg.addr := address;
-      out_msg.Type := CoherenceResponseType:DATA_EXCLUSIVE;
-      out_msg.Sender := machineID;
-      out_msg.Destination := tbe.L1_GetS_IDs;  // internal nodes
-      out_msg.DataBlk := cache_entry.DataBlk;
-      out_msg.MessageSize := MessageSizeType:Response_Data;
-    }
-  }
-
-  action(ee_sendDataToGetXRequestor, "ee", desc="Send data from cache to GetX ID") {
+    action(ee_sendDataToGetXRequestor, "ee", desc="Send data from cache to GetX ID") {
     enqueue(responseL2Network_out, ResponseMsg, to_l1_latency) {
       assert(is_valid(tbe));
       assert(is_valid(cache_entry));
@@ -899,24 +853,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     }
   }
 
-  action(mm_markExclusive, "\m", desc="set the exclusive owner") {
-    peek(L1RequestL2Network_in, RequestMsg) {
-      assert(is_valid(cache_entry));
-      cache_entry.Sharers.clear();
-      cache_entry.Exclusive := in_msg.Requestor;
-      addSharer(address, in_msg.Requestor, cache_entry);
-    }
-  }
-
-  action(mmu_markExclusiveFromUnblock, "\mu", desc="set the exclusive owner") {
-    peek(L1unblockNetwork_in, ResponseMsg) {
-      assert(is_valid(cache_entry));
-      cache_entry.Sharers.clear();
-      cache_entry.Exclusive := in_msg.Sender;
-      addSharer(address, in_msg.Sender, cache_entry);
-    }
-  }
-
+  
   action(zz_stallAndWaitL1RequestQueue, "zz", desc="recycle L1 request queue") {
     stall_and_wait(L1RequestL2Network_in, address);
   }
@@ -961,11 +898,11 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   }
 
 
-  transition({SS_MB, MT_MB, MT_IIB, MT_IB, MT_SB}, {L1_GETS, L1_GET_INSTR, L1_GETX, L1_UPGRADE}) {
+  transition({SS_MB, MT_MB, MT_IIB, MT_IB, MT_SB}, {L1_GETS, L1_GET_INSTR, L1_GETM, L1_UPGRADE}) {
     zz_stallAndWaitL1RequestQueue;
   }
 
-  transition({I_F, MT_F, I_FF}, {L1_GETS, L1_GET_INSTR, L1_GETX, L1_UPGRADE, L1_PUTX, L1_PUTX_old, L2_Replacement, L2_Replacement_clean, WB_Data, WB_Data_clean, MEM_Inv, Unblock, Exclusive_Unblock}) {
+  transition({I_F, MT_F, I_FF}, {L1_GETS, L1_GET_INSTR, L1_GETM, L1_PUTM, L2_Replacement, L2_Replacement_clean, WB_Data, WB_Data_clean, MEM_Inv, Unblock}) {
     zz_stallAndWaitL1RequestQueue;
   }
 
@@ -1008,7 +945,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   transition(ISS, Mem_Data, MT_MB) {
     m_writeDataToCache;
     //recordDelta;
-    ex_sendExclusiveDataToGetSRequestors;
+    e_sendDataToGetSRequestors;
     s_deallocateTBE;
     o_popIncomingResponseQueue;
   }
@@ -1037,11 +974,11 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     jj_popL1RequestQueue;
   }
 
-  transition({IS, ISS}, L1_GETX) {
+  transition({IS, ISS}, L1_GETM) {
     zz_stallAndWaitL1RequestQueue;
   }
 
-  transition(IM, {L1_GETX, L1_GETS, L1_GET_INSTR}) {
+  transition(IM, {L1_GETM, L1_GETS, L1_GET_INSTR}) {
     zz_stallAndWaitL1RequestQueue;
   }
 
@@ -1056,7 +993,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   }
 
 
-  transition(SS, L1_GETX, SS_MB) {
+  transition(SS, L1_GETM, SS_MB) {
     d_sendDataToRequestor;
     // fw_sendFwdInvToSharers;
     fwm_sendFwdInvToSharersMinusRequestor;
@@ -1086,7 +1023,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   }
 
 
-  transition(M, L1_GETX, MT_MB) {
+  transition(M, L1_GETM, MT_MB) {
     d_sendDataToRequestor;
     set_setMRU;
     uu_profileHit;
@@ -1102,7 +1039,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   }
 
   transition(M, L1_GETS, MT_MB) {
-    dd_sendExclusiveDataToRequestor;
+    dd_sendDataToRequestor;
     set_setMRU;
     uu_profileHit;
     jj_popL1RequestQueue;
@@ -1122,13 +1059,6 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
 
   // transitions from MT
-
-  transition(MT, L1_GETX, MT_MB) {
-    b_forwardRequestToExclusive;
-    uu_profileMiss;
-    set_setMRU;
-    jj_popL1RequestQueue;
-  }
 
 
   transition(MT, {L1_GETS, L1_GET_INSTR}, MT_IIB) {
@@ -1150,7 +1080,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     rr_deallocateL2CacheBlock;
   }
 
-  transition(MT, L1_PUTX, M) {
+  transition(MT, L1_PUTM, M) {
     ll_clearSharers;
     mr_writeDataToCacheFromRequest;
     //recordDelta;
@@ -1158,14 +1088,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     jj_popL1RequestQueue;
   }
 
-  transition({SS_MB,MT_MB}, Exclusive_Unblock, MT) {
-    // update actual directory
-    mmu_markExclusiveFromUnblock;
-    k_popUnblockQueue;
-    kd_wakeUpDependents;
-  }
-
-  transition(MT_IIB, {L1_PUTX, L1_PUTX_old}){
+  transition(MT_IIB, {L1_PUTM, L1_PUTX_old}){
     zz_stallAndWaitL1RequestQueue;
   }
 
@@ -1194,7 +1117,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   }
 
   // writeback states
-  transition({I_I, S_I, MT_I, MCT_I, M_I}, {L1_GETX, L1_UPGRADE, L1_GETS, L1_GET_INSTR}) {
+  transition({I_I, S_I, MT_I, MCT_I, M_I}, {L1_GETM, L1_UPGRADE, L1_GETS, L1_GET_INSTR}) {
     zz_stallAndWaitL1RequestQueue;
   }
 

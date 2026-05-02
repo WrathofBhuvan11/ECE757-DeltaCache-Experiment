@@ -189,7 +189,7 @@ machine(MachineType:Directory, "MESI Two Level directory protocol")
   bool isGETRequest(CoherenceRequestType type) {
     return (type == CoherenceRequestType:GETS) ||
       (type == CoherenceRequestType:GET_INSTR) ||
-      (type == CoherenceRequestType:GETX);
+      (type == CoherenceRequestType:GETM);
   }
 
   // ** OUT_PORTS **

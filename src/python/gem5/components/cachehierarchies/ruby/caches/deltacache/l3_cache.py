@@ -28,7 +28,7 @@ import math
 
 from m5.objects import (
     DeltaMapTable,
-    MESI_Three_Level_L2Cache_Controller,
+    DeltaCache_L2Cache_Controller,
     MessageBuffer,
     RubyCache,
 )
@@ -36,7 +36,7 @@ from m5.objects import (
 
 # L2Cache_Controller is ruby backend's terminology corresponding to
 # L3 cache in stdlib.
-class L3Cache(MESI_Three_Level_L2Cache_Controller):
+class L3Cache(DeltaCache_L2Cache_Controller):
     _version = 0
 
     @classmethod

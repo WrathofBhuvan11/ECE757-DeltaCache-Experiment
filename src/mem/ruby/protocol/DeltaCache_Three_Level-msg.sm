@@ -41,15 +41,13 @@
 // Various class of messages that can be exchanged between the L0 and the L1
 // controllers.
 enumeration(CoherenceClass, desc="...") {
-  GETX,      desc="Get eXclusive";
-  UPGRADE,   desc="UPGRADE to exclusive";
+  GETM,      desc="Get Modified";
   GETS,      desc="Get Shared";
   GET_INSTR, desc="Get Instruction";
   INV_OWN,   desc="Invalidate (own)";
   INV_ELSE,  desc="Invalidate (else)";
-  PUTX,      desc="Replacement message";
-  PUTX_COPY, desc="Data block to be copied in L1. L0 will still be in M state";
-
+  PUTM,      desc="Replacement message";
+  
   WB_ACK,    desc="Writeback ack";
 
   // Request types for sending data and acks from L0 to L1 cache
@@ -58,7 +56,6 @@ enumeration(CoherenceClass, desc="...") {
   INV_ACK;
 
   DATA, desc="Data block for L1 cache in S state";
-  DATA_EXCLUSIVE, desc="Data block for L1 cache in M/E state";
   ACK, desc="Generic invalidate ack";
   NAK, desc="Used by L0 to tell L1 that it cannot provide the latest value";
 
@@ -77,7 +74,7 @@ enumeration(CoherenceClass, desc="...") {
 // Class for messages sent between the L0 and the L1 controllers.
 structure(CoherenceMsg, desc="...", interface="Message") {
   Addr addr,              desc="Physical address of the cache block";
-  CoherenceClass Class,         desc="Type of message (GetS, GetX, PutX, etc)";
+  CoherenceClass Class,         desc="Type of message (GetS, GetM, PutM, etc)";
   RubyAccessMode AccessMode,    desc="user/supervisor access type";
   MachineID Sender,             desc="What component sent this message";
   MachineID Dest,        desc="What machine receives this message";
@@ -88,10 +85,9 @@ structure(CoherenceMsg, desc="...", interface="Message") {
 
   bool functionalRead(Packet *pkt) {
     // Valid data block is only present in message with following types
-    if (Class == CoherenceClass:PUTX ||
+    if (Class == CoherenceClass:PUTM ||
         Class == CoherenceClass:INV_DATA ||
-        Class == CoherenceClass:DATA ||
-        Class == CoherenceClass:DATA_EXCLUSIVE) {
+        Class == CoherenceClass:DATA) {
         return testAndRead(addr, DataBlk, pkt);
     }
 

@@ -30,12 +30,11 @@
 
 // CoherenceRequestType
 enumeration(CoherenceRequestType, desc="...") {
-  GETX,      desc="Get eXclusive";
-  UPGRADE,   desc="UPGRADE to exclusive";
   GETS,      desc="Get Shared";
+  GETM,      desc="Get Modified"
   GET_INSTR, desc="Get Instruction";
   INV,       desc="INValidate";
-  PUTX,      desc="Replacement message";
+  PUTM,      desc="Replacement message";
 
   WB_ACK,    desc="Writeback ack";
 
@@ -51,12 +50,10 @@ enumeration(CoherenceRequestType, desc="...") {
 enumeration(CoherenceResponseType, desc="...") {
   MEMORY_ACK, desc="Ack from memory controller";
   DATA, desc="Data block for L1 cache in S state";
-  DATA_EXCLUSIVE, desc="Data block for L1 cache in M/E state";
   MEMORY_DATA, desc="Data block from / to main memory";
   ACK, desc="Generic invalidate ack";
   WB_ACK, desc="writeback ack";
   UNBLOCK, desc="unblock";
-  EXCLUSIVE_UNBLOCK, desc="exclusive unblock";
   INV, desc="Invalidate from directory";
 
   FLUSH_ACK, desc="Flush ack";
@@ -77,7 +74,7 @@ structure(RequestMsg, desc="...", interface="Message") {
 
   bool functionalRead(Packet *pkt) {
     // Only PUTX messages contains the data block
-    if (Type == CoherenceRequestType:PUTX) {
+    if (Type == CoherenceRequestType:PUTM) {
         return testAndRead(addr, DataBlk, pkt);
     }
 
@@ -105,7 +102,6 @@ structure(ResponseMsg, desc="...", interface="Message") {
   bool functionalRead(Packet *pkt) {
     // Valid data block is only present in message with following types
     if (Type == CoherenceResponseType:DATA ||
-        Type == CoherenceResponseType:DATA_EXCLUSIVE ||
         Type == CoherenceResponseType:MEMORY_DATA) {
 
         return testAndRead(addr, DataBlk, pkt);
