@@ -29,8 +29,8 @@ import math
 from m5.objects import (
     DeltaMapTable,
     DeltaCache_L2Cache_Controller,
+    DeltaRubyCache,
     MessageBuffer,
-    RubyCache,
 )
 
 
@@ -55,8 +55,10 @@ class L3Cache(DeltaCache_L2Cache_Controller):
     ):
         super().__init__()
 
-        # This is the cache memory object that stores the cache data and tags
-        self.L2cache = RubyCache(
+        # This is the cache memory object that stores the cache data and tags.
+        # DeltaRubyCache (DeltaCacheMemory in C++) extends the standard
+        # CacheMemory with the parallel delta tag/data arrays.
+        self.L2cache = DeltaRubyCache(
             size=l3_size,
             assoc=l3_assoc,
             start_index_bit=self.getIndexBit(num_l3Caches, cache_line_size),

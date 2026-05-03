@@ -57,6 +57,7 @@ DeltaCacheMemory::init()
     // This sets m_cache_num_sets, m_cache_assoc, m_block_size, etc.
     CacheMemory::init();
 
+    inform("DeltaCacheMemory: initializing delta arrays for cache %s", name());
     // Derive tag array size from CacheMemory's computed capacity.
     m_num_delta_tag_entries = getNumBlocks();  // = sets × assoc
 

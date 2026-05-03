@@ -43,7 +43,9 @@ external_type(DeltaMapTable, "mem/ruby/structures/deltacache/DeltaMapTable.hh", 
 // Declare the functions as global/external functions that take the table as a pointer
 // Note: Use 'Scalar' instead of 'int' to be safe with SLICC types
 int calculateCompressedSize(DeltaMapTable * table, DataBlock block), external="yes";
-void recordMapping(DeltaMapTable * table, Addr addr, DataBlock block), external="yes";
+Addr recordMapping(DeltaMapTable * table, Addr addr, DataBlock block), external="yes";
+void overrideMapping(DeltaMapTable * table, Addr addr, DataBlock block), external="yes";
+bool computeAndStoreDelta(Addr a_addr, Addr b_addr, DataBlock a_blk, DataBlock b_blk), external="yes";
 
 machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
  : CacheMemory * L2cache;
@@ -153,6 +155,9 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     MachineID Exclusive,          desc="Exclusive holder of block";
     DataBlock DataBlk,       desc="data for the block";
     bool Dirty, default="false", desc="data is dirty";
+    bool isDeltad, default="false", desc="line is delta-compressed against a partner";
+    bool deltaDirection, default="false", desc="delta direction: false=A-B, true=B-A";
+    Addr deltaPair, desc="address of the paired line (valid when isDeltad=true)";
   }
 
   // TBE fields
@@ -442,11 +447,35 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   // ACTIONS
 
-  action(recordDelta, "r", desc="Record delta mapping") {
-    // Call it as a global function, passing mapTable as the first argument
-    //error("DEBUG: recordDelta action triggered in SLICC!");
-    //int compressedSize := calculateCompressedSize(mapTable, cache_entry.DataBlk);
-    recordMapping(mapTable, address, cache_entry.DataBlk);
+  action(recordDelta, "r", desc="Record delta mapping; pair if partner still resident") {
+    Addr partner := recordMapping(mapTable, address, cache_entry.DataBlk);
+    if (partner != 0) {
+      Entry partner_entry := getCacheEntry(partner);
+      if (is_valid(partner_entry)) {
+        // Compute (B-A) and (A-B), pick lower-entropy winner, store delta in
+        // both DataBlks. Returned bool: true => stored (B - A), so to
+        // reconstruct B from partner add the delta; to reconstruct A subtract.
+        bool win_B_minus_A := computeAndStoreDelta(partner, address,
+                                                   partner_entry.DataBlk,
+                                                   cache_entry.DataBlk);
+        cache_entry.isDeltad := true;
+        cache_entry.deltaPair := partner;
+        partner_entry.isDeltad := true;
+        partner_entry.deltaPair := address;
+        if (win_B_minus_A) {
+          cache_entry.deltaDirection   := true;   // B = A + delta (ADD)
+          partner_entry.deltaDirection := false;  // A = B - delta (SUB)
+        } else {
+          cache_entry.deltaDirection   := false;  // B = A - delta (SUB)
+          partner_entry.deltaDirection := true;   // A = B + delta (ADD)
+        }
+        DPRINTF(RubySlicc, "DeltaPair set: 0x%x <-> 0x%x\n", address, partner);
+      } else {
+        // Partner was evicted before we could pair. Re-store ourselves in
+        // the slot so we can be the candidate for the next collision.
+        overrideMapping(mapTable, address, cache_entry.DataBlk);
+      }
+    }
   }
 
   action(a_issueFetchToMemory, "a", desc="fetch data from memory") {
@@ -968,7 +997,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(ISS, Mem_Data, S_MB) {
     m_writeDataToCache;
-    //recordDelta;
+    recordDelta;
     e_sendDataToGetSRequestors;
     s_deallocateTBE;
     o_popIncomingResponseQueue;
@@ -976,7 +1005,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(IS, Mem_Data, SS) {
     m_writeDataToCache;
-    //recordDelta;
+    recordDelta;
     e_sendDataToGetSRequestors;
     s_deallocateTBE;
     o_popIncomingResponseQueue;
@@ -985,7 +1014,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(IM, Mem_Data, MT_MB) {
     m_writeDataToCache;
-    //recordDelta;
+    recordDelta;
     ee_sendDataToGetXRequestor;
     s_deallocateTBE;
     o_popIncomingResponseQueue;
@@ -1106,7 +1135,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   transition(MT, L1_PUTM, M) {
     ll_clearSharers;
     mr_writeDataToCacheFromRequest;
-    //recordDelta;
+    recordDelta;
     t_sendWBAck;
     jj_popL1RequestQueue;
   }
@@ -1142,13 +1171,13 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(MT_IIB, {WB_Data, WB_Data_clean}, MT_SB) {
     m_writeDataToCache;
-    //recordDelta;
+    recordDelta;
     o_popIncomingResponseQueue;
   }
 
   transition(MT_IB, {WB_Data, WB_Data_clean}, SS) {
     m_writeDataToCache;
-    //recordDelta;
+    recordDelta;
     o_popIncomingResponseQueue;
     kd_wakeUpDependents;
   }
