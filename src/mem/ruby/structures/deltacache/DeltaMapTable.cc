@@ -13,19 +13,45 @@ DeltaMapTable::DeltaMapTable(const Params &p)
     inform("DeltaMapTable: Skeleton Initialized for ECE757 DeltaCache\n");
 }
 
+//uint64_t 
+//DeltaMapTable::generateMapValue(const DataBlock& blk)
+//{
+//    uint64_t byte_labels = 0;
+//    for (int i = 0; i < 64; ++i) {
+//        if (blk.getByte(i) != 0) {
+//            byte_labels |= (1ULL << i);
+//        }
+//    }
+//    // Folding to mix the entropy
+//    byte_labels ^= (byte_labels >> 32);
+//    byte_labels ^= (byte_labels >> 16);
+//    return byte_labels;
+//}
+
+
+
+/////////////////////////////////////////////////
+///////////// SBL Implementation ////////////////
+/////////////////////////////////////////////////
+
 uint64_t 
 DeltaMapTable::generateMapValue(const DataBlock& blk)
 {
-    uint64_t byte_labels = 0;
-    for (int i = 0; i < 64; ++i) {
-        if (blk.getByte(i) != 0) {
-            byte_labels |= (1ULL << i);
-        }
+    uint64_t signature = 0;
+    
+    // SBL Implementation: Sample 8 bytes across the 64B line
+    // Indices 0, 8, 16, 24, 32, 40, 48, 56 cover the full line spread
+    for (int i = 0; i < 8; ++i) {
+        uint8_t byte = blk.getByte(i * 8);
+        // Basic hashing: Shift and XOR to mix byte values into the signature
+        signature ^= (static_cast<uint64_t>(byte) << (i % 4)); 
     }
-    // Folding to mix the entropy
-    byte_labels ^= (byte_labels >> 32);
-    byte_labels ^= (byte_labels >> 16);
-    return byte_labels;
+
+    // Mix entropy further
+    signature ^= (signature >> 8);
+    
+    // Mask to exactly 10 bits (0 to 1023)
+    return signature & 0x3FF; 
 }
 
 
@@ -35,27 +61,32 @@ int DeltaMapTable::calculateCompressedSize(const DataBlock& blk) {
 }
 
 void DeltaMapTable::recordMapping(Addr addr, const DataBlock& blk) {
-    //inform("DEBUG: recordDelta logic reached\n");
-    // inform("DeltaMapTable: Recording 0x%lx with size %d\n", addr, compressed_size);
-    uint64_t map_val = generateMapValue(blk);
+    uint64_t sig_val = generateMapValue(blk);
     
-    // Direct index using modulo to stay within bounds
-    uint32_t index = map_val % m_table_entries;
+    // Since sig_val is now 10 bits, ensure m_table_entries matches (1024)
+    uint32_t index = sig_val % m_table_entries;
 
     if (m_valid_bits[index]) {
         Addr candidate_addr = m_direct_map_table[index];
         
         if (candidate_addr != addr) {
-            inform("ECE757 Delta Match: Index %d | Line 0x%lx matched Candidate 0x%lx\n", 
-                   index, addr, candidate_addr);
-            m_valid_bits[index] = false;
+            // Updated to print the 10-bit signature value
+            inform("ECE757 Delta Match: Sig [0x%x] | Index %d | Line 0x%lx matched Candidate 0x%lx\n", 
+                   sig_val, index, addr, candidate_addr);
+            
+            // In a real XOR cache, you'd trigger the Delta Compressor here
+            m_valid_bits[index] = false; 
+            m_direct_map_table[index] = 0;
         }
     } else {
         m_direct_map_table[index] = addr;
         m_valid_bits[index] = true;
-        inform("ECE757 Delta Store: Index %d | Line 0x%lx stored\n", index, addr);
+        inform("ECE757 Delta Store: Sig [0x%x] | Index %d | Line 0x%lx stored\n", 
+               sig_val, index, addr);
     }
 }
+
+
 
 } // namespace ruby
 } // namespace gem5

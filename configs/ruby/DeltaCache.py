@@ -53,7 +53,9 @@ class L1Cache(RubyCache):
     pass
 
 
-class L2Cache(RubyCache):
+# L2 is the LLC — backed by DeltaCacheMemory (extends CacheMemory).
+# L0 and L1 use plain RubyCache; only L2 uses the delta structure.
+class L2Cache(DeltaRubyCache):
     pass
 
 
