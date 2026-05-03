@@ -93,7 +93,7 @@ inline bool computeAndStoreDelta(Addr a_addr, Addr b_addr,
         b_blk.setByte(i, chosen[i]);
     }
 
-    
+
 
     std::ostringstream delta_hex;
     for (int i = 0; i < 64; ++i) {

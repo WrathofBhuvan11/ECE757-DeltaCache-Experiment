@@ -911,7 +911,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     }
   }
 
-  
+
   action(zz_stallAndWaitL1RequestQueue, "zz", desc="recycle L1 request queue") {
     stall_and_wait(L1RequestL2Network_in, address);
   }

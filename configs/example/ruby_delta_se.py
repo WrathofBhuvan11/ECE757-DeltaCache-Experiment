@@ -1,7 +1,7 @@
 import argparse
 import os
-import sys
 import shlex
+import sys
 
 import m5
 from m5.defines import buildEnv
@@ -29,7 +29,7 @@ parser.add_argument(
 parser.add_argument(
     "--binary-args",
     default="",
-    help="quoted argv string passed to the binary (e.g. \"100 0.5\")",
+    help='quoted argv string passed to the binary (e.g. "100 0.5")',
 )
 
 args = parser.parse_args()
@@ -44,12 +44,12 @@ if not os.path.isfile(args.binary):
 # Cache sizes — match verify_map_table.py defaults
 args.l1d_size = "32KiB"
 args.l1i_size = "32KiB"
-args.l2_size  = "256KiB"
-args.l3_size  = "1MB"
+args.l2_size = "256KiB"
+args.l3_size = "1MB"
 args.l1d_assoc = 2
 args.l1i_assoc = 2
-args.l2_assoc  = 8
-args.l3_assoc  = 16
+args.l2_assoc = 8
+args.l3_assoc = 16
 
 # -----------------------------------------------------
 # System + CPU

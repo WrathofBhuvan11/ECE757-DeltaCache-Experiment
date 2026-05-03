@@ -14,7 +14,7 @@ DeltaMapTable::DeltaMapTable(const Params &p)
     pair_count = 0;
 }
 
-//uint64_t 
+//uint64_t
 //DeltaMapTable::generateMapValue(const DataBlock& blk)
 //{
 //    uint64_t byte_labels = 0;
@@ -35,17 +35,17 @@ DeltaMapTable::DeltaMapTable(const Params &p)
 ///////////// SBL Implementation ////////////////
 /////////////////////////////////////////////////
 
-uint64_t 
+uint64_t
 DeltaMapTable::generateMapValue(const DataBlock& blk)
 {
     uint64_t signature = 0;
-    
+
     // SBL Implementation: Sample 8 bytes across the 64B line
     // Indices 0, 8, 16, 24, 32, 40, 48, 56 cover the full line spread
     /*for (int i = 0; i < 8; ++i) {
         uint8_t byte = blk.getByte(i * 8);
         // Basic hashing: Shift and XOR to mix byte values into the signature
-        signature ^= (static_cast<uint64_t>(byte) << (i % 4)); 
+        signature ^= (static_cast<uint64_t>(byte) << (i % 4));
     }
 
     // Mix entropy further
@@ -58,7 +58,7 @@ DeltaMapTable::generateMapValue(const DataBlock& blk)
     }
         signature ^= (signature >> 8);
     // Mask to exactly 10 bits (0 to 1023)
-    return signature % 0x3FF; 
+    return signature % 0x3FF;
 }
 
 

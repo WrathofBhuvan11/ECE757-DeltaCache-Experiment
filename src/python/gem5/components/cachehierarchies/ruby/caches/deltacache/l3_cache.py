@@ -27,8 +27,8 @@
 import math
 
 from m5.objects import (
-    DeltaMapTable,
     DeltaCache_L2Cache_Controller,
+    DeltaMapTable,
     DeltaRubyCache,
     MessageBuffer,
 )
