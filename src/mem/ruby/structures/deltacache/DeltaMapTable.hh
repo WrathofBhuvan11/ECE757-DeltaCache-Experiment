@@ -49,6 +49,13 @@ inline Addr recordMapping(DeltaMapTable& table, Addr addr, const DataBlock& blk)
     return table.recordMapping(addr, blk);
 }
 
+// Void variant for SLICC call sites that don't want to capture the partner
+// address (e.g., re-adding the surviving partner to the map table after a
+// Condition 2 undelta).
+inline void recordMappingVoid(DeltaMapTable& table, Addr addr, const DataBlock& blk) {
+    (void)table.recordMapping(addr, blk);
+}
+
 inline void overrideMapping(DeltaMapTable& table, Addr addr, const DataBlock& blk) {
     table.overrideMapping(addr, blk);
 }
@@ -111,6 +118,49 @@ inline bool computeAndStoreDelta(Addr a_addr, Addr b_addr,
                          : "A-B (B=A-delta, A=B+delta)",
            score_BA, score_AB, delta_hex.str().c_str());
     return win_B_minus_A;
+}
+
+/**
+ * Reconstruct the partner's original bytes from a known-original line and
+ * the delta currently stored in the partner's DataBlk.
+ *
+ * Convention from computeAndStoreDelta:
+ *   direction == true  => "this entry's original = partner's original + delta"
+ *   direction == false => "this entry's original = partner's original - delta"
+ *
+ * known_blk holds the known-original bytes (e.g., a fresh PUTM writeback).
+ * partner_blk holds the delta bytes; on return it is overwritten in place
+ * with the reconstructed originals.
+ */
+inline void undeltaPair(Addr known_addr, Addr partner_addr,
+                        DataBlock& known_blk, DataBlock& partner_blk,
+                        bool partner_dir) {
+    auto blkToHex = [](const DataBlock& blk) {
+        std::ostringstream oss;
+        for (int i = 0; i < 64; ++i) {
+            oss << std::hex << std::setw(2) << std::setfill('0')
+                << (int)blk.getByte(i);
+            if (i != 63) oss << ' ';
+        }
+        return oss.str();
+    };
+
+    inform("ECE757 Undelta begin: known=0x%lx data=%s | partner=0x%lx delta=%s",
+           known_addr, blkToHex(known_blk).c_str(),
+           partner_addr, blkToHex(partner_blk).c_str());
+
+    for (int i = 0; i < 64; ++i) {
+        uint8_t k = known_blk.getByte(i);
+        uint8_t d = partner_blk.getByte(i);
+        uint8_t recovered = partner_dir ? (uint8_t)(k + d)
+                                        : (uint8_t)(k - d);
+        partner_blk.setByte(i, recovered);
+    }
+
+    inform("ECE757 Undelta done: partner=0x%lx data=%s | dir=%s",
+           partner_addr, blkToHex(partner_blk).c_str(),
+           partner_dir ? "ADD (partner=known+delta)"
+                       : "SUB (partner=known-delta)");
 }
 
 } // namespace ruby

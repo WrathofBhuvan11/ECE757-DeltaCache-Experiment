@@ -44,6 +44,11 @@ enumeration(CoherenceRequestType, desc="...") {
   FLUSH, desc="Flush request";
   FLUSH_NP, desc="Flush request (not present in L1 and L0)";
   FLUSH_DATA, desc="Get data for flush request";
+
+  // ECE757 DeltaCache Condition 2: GETM hit a delta-paired line in L3.
+  // L3 needs original data to undelta the pair before completing the GETM.
+  FWD_GETM_DLT,    desc="ECE757: send your data + invalidate (delta GETM target)";
+  FWD_PARTNER_DLT, desc="ECE757: send your data, do not invalidate (delta partner read)";
 }
 
 // CoherenceResponseType
@@ -58,6 +63,9 @@ enumeration(CoherenceResponseType, desc="...") {
   INV, desc="Invalidate from directory";
 
   FLUSH_ACK, desc="Flush ack";
+
+  // ECE757 DeltaCache Condition 2: data response for the delta WB request.
+  DLT_DATA, desc="ECE757: data response for delta undelta";
 }
 
 // RequestMsg
