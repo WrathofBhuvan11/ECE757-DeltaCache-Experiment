@@ -110,16 +110,14 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     I_FF, AccessPermission:Busy, desc="Flushing from SS state, waiting for sharers acks and memory ack";
     MT_F, AccessPermission:Busy, desc="Flushing from MT state, waiting for data from owner";
 
-    // ECE757 DeltaCache Condition 2: GETM landed on a delta-paired line.
-    // L3 stalls in these states while it pulls the original bytes from
-    // an upper holder so it can undelta the pair before completing the GETM.
-    SS_DLT_GM, AccessPermission:Busy, desc="GETM stalled awaiting delta WB from a sharer";
+    // ECE757 DeltaCache Condition 1: GETM landed on a delta-paired line.
+    // SS path no longer parks here -- it undeltas inline from GETM data.
+    // M path parks in M_DLT_GM while we cross-fetch partner bytes.
+    SS_DLT_GM, AccessPermission:Busy, desc="(legacy/unused) GETM stalled awaiting delta WB from a sharer";
     // MT_DLT_GM, AccessPermission:Busy, desc="This Is Not Possible";
-    M_DLT_GM,  AccessPermission:Busy, desc="Modified Line Evicted to L3 only, and then deltad and another GETM issued";
-    // ECE757 DeltaCache Condition 3: L3 evicting a delta-paired line. The
-    // victim's L3 entry is deallocated so the new line can take its slot;
-    // the eviction completes via the partner's DLT_DATA arrival at the
-    // partner's address (cross-address handler).
+    M_DLT_GM,  AccessPermission:Busy, desc="L3-only delta'd line awaiting partner DLT_DATA for GETM";
+    // ECE757 DeltaCache Condition 4 scaffolding: L3 evicting a delta-paired
+    // line. Transitions not yet written (Cond 4 is on hold).
     SS_I_DLT, AccessPermission:Busy, desc="L3 evict of delta'd SS victim, awaiting partner DLT_DATA";
     // MT_EV_DLT, AccessPermission:Busy, desc="L3 evict of delta'd MT victim, awaiting partner DLT_DATA";
     M_I_DLT,  AccessPermission:Busy, desc="L3 evict of delta'd M victim, awaiting partner DLT_DATA";
@@ -139,19 +137,22 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     // into two events depending on whether the requestor is the last sharer.
     L1_PUTM_Last,            desc="Clean L1 PUTM, requestor is the last sharer";
     L1_PUTM_NotLast,         desc="Clean L1 PUTM, other sharers remain";
-    // ECE757 DeltaCache Condition 2: GETM hit a delta-paired line.
-    // The in_port splits L1_GETM into these by L3 state when the entry is
-    // delta'd, so the transition can pull originals from upper before
-    // completing the GETM.
-    //L1_GETM_Dlt,          desc="GETM on delta-paired line, L3 in SS";
-    //L1_GETM_Dlt_MT,          desc="GETM on delta-paired line, L3 in MT";
-    //L1_GETM_Dlt_M,           desc="GETM on delta-paired line, L3 in M (no upper)";
-    Dlt_WB_Data,             desc="Delta WB data response from upper";
-    // ECE757 DeltaCache Condition 3: L3 evicting a delta-paired line.
-    // Dispatched by the cacheProbe path when the victim is delta'd. The
-    // transition fires a cross-address FWD_PARTNER_DLT to one of the
-    // partner's L1 holders, then sends INV to the evicting line's L1
-    // sharers (ACK-only, normal flow).
+    // ECE757 DeltaCache Condition 1: GETM hit on a delta-paired line.
+    // SS path uses the GETM's data inline (requestor was a sharer with raw bytes).
+    // M path is L3-only; we cross-fetch the partner's bytes from its sharer.
+    L1_GETM_Dlt_SS,          desc="GETM on delta-paired line, L3 in SS (uses GETM data inline)";
+    //L1_GETM_Dlt_MT,        desc="(impossible) GETM on delta-paired line, L3 in MT";
+    L1_GETM_Dlt_M,           desc="GETM on delta-paired line, L3 in M (cross-fetch partner)";
+    Dlt_WB_Data,             desc="Delta WB data response from upper (M_DLT_GM cross-fetch)";
+    // ECE757 DeltaCache Condition 4: cross-address DLT_DATA arrived at the
+    // partner's address while the victim is parked in M_I_DLT.
+    Dlt_Evict_Data,          desc="DLT_DATA for in-flight Cond 4 cross-evict (cross-address)";
+    // ECE757 DeltaCache Condition 5: same-address DLT_DATA arrived while the
+    // victim is parked in SS_I_DLT (its own back-invalidation). Split into
+    // _Partial / _Last so the in_port can route the final one to memory write.
+    Dlt_Evict_Self_Partial,  desc="DLT_DATA for SS_I_DLT eviction; more INV-acks pending";
+    Dlt_Evict_Self_Last,     desc="DLT_DATA for SS_I_DLT eviction; last response";
+    // ECE757 DeltaCache: L3 replacing a delta-paired victim.
     L2_Replacement_Delta,    desc="L3 replacing a delta-paired victim";
     // events initiated by this L2
     L2_Replacement,     desc="L2 Replacement", format="!r";
@@ -403,8 +404,28 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
               trigger(Event:WB_Data_clean, in_msg.addr, cache_entry, tbe);
             }
           } else if (in_msg.Type == CoherenceResponseType:DLT_DATA) {
-            // ECE757 DeltaCache Condition 2: data we requested for undelta.
-            trigger(Event:Dlt_WB_Data, in_msg.addr, cache_entry, tbe);
+            // ECE757 DeltaCache: dispatch DLT_DATA to the right delta path.
+            // - Cond 5 (same-address eviction): this addr has a TBE with delta
+            //   info captured. Split _Last / _Partial by remaining acks.
+            // - Cond 4 (cross-address eviction): cache_entry is the partner;
+            //   the victim's TBE is at cache_entry.deltaPair with delta info.
+            // - Cond 1 (M_DLT_GM cross-fetch): cross_tbe has no delta info.
+            if (is_valid(tbe) && tbe.tbeIsDeltad) {
+              if ((getPendingAcks(tbe) - 1) == 0) {
+                trigger(Event:Dlt_Evict_Self_Last, in_msg.addr, cache_entry, tbe);
+              } else {
+                trigger(Event:Dlt_Evict_Self_Partial, in_msg.addr, cache_entry, tbe);
+              }
+            } else if (is_valid(cache_entry)) {
+              TBE cross_tbe := TBEs[cache_entry.deltaPair];
+              if (is_valid(cross_tbe) && cross_tbe.tbeIsDeltad) {
+                trigger(Event:Dlt_Evict_Data, in_msg.addr, cache_entry, tbe);
+              } else {
+                trigger(Event:Dlt_WB_Data, in_msg.addr, cache_entry, tbe);
+              }
+            } else {
+              error("DLT_DATA arrived with no valid TBE or cache_entry");
+            }
           } else if (in_msg.Type == CoherenceResponseType:ACK) {
             if ((getPendingAcks(tbe) - in_msg.AckCount) == 0) {
               trigger(Event:Ack_all, in_msg.addr, cache_entry, tbe);
@@ -477,14 +498,15 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
             }
           } else if (in_msg.Type == CoherenceRequestType:GETM &&
                      cache_entry.isDeltad) {
-            // ECE757 DeltaCache Condition 2: GETM on a delta-paired line.
-            // The L3's bytes are delta -- we must pull originals from upper
-            // before forwarding/shipping. Dispatch by L3 state.
+            // ECE757 DeltaCache Condition 1: GETM on a delta-paired line.
+            // SS: requestor was a sharer with raw bytes; the GETM carries
+            // them, undelta inline. M: L3-only, no upper holder of B; we
+            // cross-fetch the partner's bytes from one of A's sharers.
+            // MT is impossible here (an MT entry has stale L3 bytes and
+            // can't be delta-paired against -- L1/L2 never see deltas).
             if (cache_entry.CacheState == State:SS) {
               trigger(Event:L1_GETM_Dlt_SS, in_msg.addr, cache_entry, tbe);
-            } /*else if (cache_entry.CacheState == State:MT) {
-              trigger(Event:L1_GETM_Dlt_MT, in_msg.addr, cache_entry, tbe);
-            } */else if (cache_entry.CacheState == State:M) {
+            } else if (cache_entry.CacheState == State:M) {
               trigger(Event:L1_GETM_Dlt_M, in_msg.addr, cache_entry, tbe);
             } else {
               // Transient L3 state -- fall through to the standard event so
@@ -509,10 +531,11 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
             // No room in the L2, so we need to make room before handling the request
             Addr victim := L2cache.cacheProbe(in_msg.addr);
             Entry L2cache_entry := getCacheEntry(victim);
-            // ECE757 DeltaCache Condition 3: a delta-paired victim needs a
-            // cross-address fetch from its partner's upper holder before we
-            // can write valid bytes to memory or shed the entry. Dispatch
-            // to a dedicated delta-eviction event regardless of dirty bit.
+            // ECE757 DeltaCache Condition 4 scaffolding: a delta-paired
+            // victim needs a cross-address fetch from its partner's upper
+            // holder before we can shed the entry. Dispatch wired here;
+            // matching transition is not yet written -- the request will
+            // stall at runtime if it fires.
             if (L2cache_entry.isDeltad) {
               trigger(Event:L2_Replacement_Delta,
                       victim, L2cache_entry, TBEs[victim]);
@@ -553,8 +576,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   action(uu_undeltaIfPartnerDormant, "uu", desc="Undelta pair if partner is L3-only") {
     if (is_valid(cache_entry) && cache_entry.isDeltad) {
       Entry partner_entry := getCacheEntry(cache_entry.deltaPair);
-      if (is_valid(partner_entry) && partner_entry.isDeltad /*&&
-          partner_entry.CacheState == State:M*/) {
+      if (is_valid(partner_entry) && partner_entry.isDeltad) {
         peek(L1RequestL2Network_in, RequestMsg) {
           // Adopt the writeback's original bytes into this entry, then
           // reconstruct the partner using (this + delta).
@@ -564,58 +586,42 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
                       partner_entry.deltaDirection);
           cache_entry.isDeltad := false;
           partner_entry.isDeltad := false;
-          // Wake any stalled requests on the partner's address (in particular
-          // a Condition 2 M_DLT_GM stall is waiting for exactly this).
+          // Re-add both lines to the map table: they're raw and resident,
+          // so they're eligible for future pairings.
+          overrideMapping(mapTable, address, cache_entry.DataBlk);
+          overrideMapping(mapTable, cache_entry.deltaPair, partner_entry.DataBlk);
+          // Wake any stalled requests on the partner's address (an M_DLT_GM
+          // stall could be parked there waiting for partner data).
           wakeUpBuffers(cache_entry.deltaPair);
-          DPRINTF(RubySlicc, "DeltaPair undeltad (Cond1): 0x%x and 0x%x\n",
+          DPRINTF(RubySlicc, "DeltaPair undeltad (Cond3-LastEvict): 0x%x and 0x%x\n",
                   address, cache_entry.deltaPair);
         }
       }
     }
   }
 
-  // ECE757 DeltaCache Condition 2: SS state, GETM hit on delta'd line.
-  // Pick one sharer (smallest non-requestor; fall back to requestor if it's
-  // the only sharer) and ask it for the line's original bytes via
-  // FWD_GETM_DLT (sender will send DLT_DATA + invalidate). All other sharers
-  // get a normal INV addressed to the original GETM requester so they ack
-  // it directly. Stash the requestor's MachineID and the count of sharers
-  // we INV'd into the TBE so we can ship the right AckCount when DLT_DATA
-  // arrives.
-  action(rdss_requestDeltaFromOneSharer, "rds", desc="SS: pull delta-source from a sharer, INV others") {
+  // ECE757 DeltaCache Condition 1 (SS path): GETM landed on a delta'd entry
+  // in SS. The requestor was already a sharer with raw bytes, and the GETM
+  // message carries them. Adopt those bytes into B's L3 entry, reconstruct
+  // A from (B + delta), INV the other sharers, and ship DATA + AckCount to
+  // the requestor. Both entries leave the deltad state. AckCount accounts
+  // for the INVs we just sent.
+  action(rdss_undeltaInlineFromGETM, "rds", desc="SS: adopt GETM data, undelta partner, INV other sharers") {
     peek(L1RequestL2Network_in, RequestMsg) {
       assert(is_valid(cache_entry));
       assert(is_valid(tbe));
 
-      // FWD_GETM_DLT to one chosen sharer (smallestElement is a stable pick;
-      // even if it happens to be the original GETM requestor, the round-trip
-      // is correct, just slightly wasteful).
-      //This is not necessary if the message(getm) has the original data 
-      //enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
-      //  out_msg.addr := address;
-      //  out_msg.Type := CoherenceRequestType:FWD_GETM_DLT;
-      //  out_msg.Requestor := machineID;
-      //  out_msg.Destination.add(cache_entry.Sharers.smallestElement(MachineType:L1Cache));
-      //  out_msg.MessageSize := MessageSizeType:Request_Control;
-      //}
-
-      // INV to all other sharers (not chosen, not requestor). Those ack the
-      // requestor directly.
       enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
         out_msg.addr := address;
         out_msg.Type := CoherenceRequestType:INV;
         out_msg.Requestor := in_msg.Requestor;
         out_msg.Destination := cache_entry.Sharers;
-        out_msg.Destination.remove(cache_entry.Sharers.smallestElement(MachineType:L1Cache));
         out_msg.Destination.remove(in_msg.Requestor);
         out_msg.MessageSize := MessageSizeType:Request_Control;
       }
 
-      // pendingAcks = sharers - chosen - (requestor if it was a sharer and
-      // distinct from chosen). Used to compute AckCount when shipping data.
-      tbe.pendingAcks := cache_entry.Sharers.count() - 1;
-      if (cache_entry.Sharers.isElement(in_msg.Requestor) &&
-          cache_entry.Sharers.smallestElement(MachineType:L1Cache) != in_msg.Requestor) {
+      tbe.pendingAcks := cache_entry.Sharers.count();
+      if (cache_entry.Sharers.isElement(in_msg.Requestor)) {
         tbe.pendingAcks := tbe.pendingAcks - 1;
       }
 
@@ -626,51 +632,64 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
                   partner_entry.deltaDirection);
       cache_entry.isDeltad := false;
       partner_entry.isDeltad := false;
-
-      // Drop the chosen sharer from L3's tracking now -- it transitions to I.
-      cache_entry.Sharers.remove(cache_entry.Sharers.smallestElement(MachineType:L1Cache));
+      DPRINTF(RubySlicc, "DeltaPair undeltad (Cond1-SS): 0x%x and 0x%x\n",
+              address, cache_entry.deltaPair);
     }
   }
 
-  // ECE757 DeltaCache Condition 2: MT state, GETM hit on delta'd line.
-  // Send FWD_GETM_DLT to the exclusive owner. No other holders, AckCount=0.
-  //Never in MT state when delta'd 
-  /*
-  action(rdmt_requestDeltaFromExclusive, "rdm", desc="MT: pull delta-source from exclusive owner") {
-    peek(L1RequestL2Network_in, RequestMsg) {
-      assert(is_valid(cache_entry));
-      assert(is_valid(tbe));
-      enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
-        out_msg.addr := address;
-        out_msg.Type := CoherenceRequestType:FWD_GETM_DLT;
-        out_msg.Requestor := machineID;
-        out_msg.Destination.add(cache_entry.Exclusive);
-        out_msg.MessageSize := MessageSizeType:Request_Control;
-      }
-      tbe.pendingAcks := 0;
-    }
-  }*/
-
-  // ECE757 DeltaCache Condition 2: on DLT_DATA arrival, this entry's
-  // L3 DataBlk gets the original (just received), then we reconstruct the
-  // partner from (this + delta) using partner's deltaDirection. Clear
-  // isDeltad on both. Re-add the partner to the map table so it can be
-  // a candidate for future pairings (we are not re-adding the line going
-  // to M -- it's leaving the cache hierarchy via the new exclusive owner).
-  // looks correct, might have to validate that this is undeltaing everything
-  action(udcur_undeltaWithReceivedAsCurrent, "udc", desc="Undelta pair using DLT_DATA as current") {
+  // ECE757 DeltaCache Condition 1 (M-state cross-fetch): the GETM target B
+  // is L3-only, so we send FWD_PARTNER_DLT to one of A's sharers asking for
+  // A's original bytes. The DLT_DATA response will arrive at A's address
+  // and be picked up by the SS Dlt_WB_Data handler, which reconstructs B
+  // and ships to B's GETM requestor.
+  action(rmd_requestPartnerForMCrossFetch, "rmd", desc="M: send FWD_PARTNER_DLT to one of A's sharers") {
     assert(is_valid(cache_entry));
-    assert(cache_entry.isDeltad);
     Entry partner_entry := getCacheEntry(cache_entry.deltaPair);
     assert(is_valid(partner_entry));
+    assert(partner_entry.CacheState == State:SS);
+    enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
+      out_msg.addr := cache_entry.deltaPair;
+      out_msg.Type := CoherenceRequestType:FWD_PARTNER_DLT;
+      out_msg.Requestor := machineID;
+      out_msg.Destination.add(partner_entry.Sharers.smallestElement(MachineType:L1Cache));
+      out_msg.MessageSize := MessageSizeType:Request_Control;
+    }
+  }
+
+  // ECE757 DeltaCache Condition 1 (M-state cross-fetch, continued): DLT_DATA
+  // arrived at A's address (this transition runs on A). A is in SS, still
+  // delta'd; B is the partner sitting in M_DLT_GM with its TBE holding the
+  // GETM requestor. Adopt A's bytes, reconstruct B, ship DATA to B's
+  // requestor with AckCount=0 (B had no upper holders), wake B's address.
+  action(crm_crossUndeltaForMGetm, "crm", desc="Cross-undelta for M_DLT_GM, ship to B's requestor") {
+    assert(is_valid(cache_entry));
+    assert(cache_entry.isDeltad);
+    Entry b_entry := getCacheEntry(cache_entry.deltaPair);
+    assert(is_valid(b_entry));
+    assert(b_entry.isDeltad);
+    TBE b_tbe := TBEs[cache_entry.deltaPair];
+    assert(is_valid(b_tbe));
     peek(responseL2Network_in, ResponseMsg) {
+      // Adopt A's bytes into A's entry, then reconstruct B's bytes in place.
       cache_entry.DataBlk := in_msg.DataBlk;
       undeltaPair(address, cache_entry.deltaPair,
-                  cache_entry.DataBlk, partner_entry.DataBlk,
-                  partner_entry.deltaDirection);
+                  cache_entry.DataBlk, b_entry.DataBlk,
+                  b_entry.deltaDirection);
       cache_entry.isDeltad := false;
-      partner_entry.isDeltad := false;
-      DPRINTF(RubySlicc, "DeltaPair undeltad (Cond2-GETM): 0x%x and 0x%x\n",
+      b_entry.isDeltad := false;
+      // Re-add A to map table so it's eligible for future pairings.
+      overrideMapping(mapTable, address, cache_entry.DataBlk);
+      // Ship reconstructed B to B's GETM requestor.
+      enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+        out_msg.addr := cache_entry.deltaPair;
+        out_msg.Type := CoherenceResponseType:DATA;
+        out_msg.Sender := machineID;
+        out_msg.Destination.add(b_tbe.L1_GetX_ID);
+        out_msg.DataBlk := b_entry.DataBlk;
+        out_msg.MessageSize := MessageSizeType:Response_Data;
+        out_msg.AckCount := 0;
+      }
+      DPRINTF(RubySlicc, "DeltaPair undeltad (Cond1-M cross): A=0x%x B=0x%x\n",
               address, cache_entry.deltaPair);
     }
   }
@@ -678,21 +697,9 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   // ECE757 DeltaCache Condition 2: re-add the partner (the line that's
   // staying resident) to the map table so it's eligible for future pairing.
 
-  action(arpm_addPartnerBackToMap, "arpm", desc="Re-add partner to map table after undelta") {
-    assert(is_valid(cache_entry));
-    Entry partner_entry := getCacheEntry(cache_entry.deltaPair);
-    if (is_valid(partner_entry)) {
-      // overrideMapping guarantees the partner's signature lands in the map
-      // table (recordMapping would clear the slot on a hash collision and
-      // drop the partner from the table entirely, preventing future pairing).
-      overrideMapping(mapTable, cache_entry.deltaPair,
-                      partner_entry.DataBlk);
-    }
-  }
-
-  // ECE757 DeltaCache Condition 2: ship reconstructed data to the original
-  // GETM requester recorded in the TBE. AckCount accounts for INVs we sent
-  // to other sharers (stored in tbe.pendingAcks at request time).
+  // ECE757 DeltaCache Condition 1 (SS path): ship reconstructed B to the
+  // original GETM requester; AckCount = -pendingAcks (negative: requestor
+  // collects this many INV-acks from the other sharers we just INV'd).
   action(eedlt_sendDataToGetXRequestorWithAcks, "eed", desc="Ship undeltad data to GETM requester with ack count") {
     enqueue(responseL2Network_out, ResponseMsg, to_l1_latency) {
       assert(is_valid(tbe));
@@ -707,28 +714,54 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     }
   }
 
-  // ECE757 DeltaCache Condition 3: capture the cache_entry's delta info into
-  // the TBE before rr_deallocateL2CacheBlock destroys the entry. The MT
-  // eviction's post-WB_Data path will use this to undelta the partner.
-  // No suche this as a delta'd pair with mt state
-  //action(cdt_captureDeltaToTBE, "cdt", desc="Capture delta info into TBE before dealloc") {
-  //  assert(is_valid(tbe));
-  //  if (is_valid(cache_entry) && cache_entry.isDeltad) {
-  //    tbe.tbeIsDeltad := true;
-  //    tbe.tbeDeltaDirection := cache_entry.deltaDirection;
-  //    tbe.tbeDeltaPair := cache_entry.deltaPair;
-  //  }
-  //}
+  // ECE757 DeltaCache Condition 1 (SS path): re-add the partner (A, staying
+  // resident) to the map table so it's eligible for future pairing.
+  action(arpm_addPartnerBackToMap, "arpm", desc="Re-add partner to map table after undelta") {
+    assert(is_valid(cache_entry));
+    Entry partner_entry := getCacheEntry(cache_entry.deltaPair);
+    if (is_valid(partner_entry)) {
+      overrideMapping(mapTable, cache_entry.deltaPair,
+                      partner_entry.DataBlk);
+    }
+  }
 
-  // ECE757 DeltaCache Condition 3: after the evicted line's WB_Data has
-  // landed in tbe.DataBlk (replacing the delta bytes with the owner's
-  // original), reconstruct the surviving partner using
-  //   partner = tbe.DataBlk +/- delta
-  // (delta still lives in partner_entry.DataBlk; partner_entry.deltaDirection
-  // tells us the sign). Then clear partner.isDeltad, re-add partner to the
-  // map table so it can be paired again, and wake any stalled requests on
-  // partner's address (M_DLT_GM may be parked there waiting for exactly
-  // this).
+  // ECE757 DeltaCache: legacy Condition 2 helper kept for reference. The
+  // current SS path undeltas inline; this version was for the FWD_GETM_DLT
+  // round-trip design before we made GETM carry data.
+  action(udcur_undeltaWithReceivedAsCurrent, "udc", desc="Undelta pair using DLT_DATA as current") {
+    assert(is_valid(cache_entry));
+    assert(cache_entry.isDeltad);
+    Entry partner_entry := getCacheEntry(cache_entry.deltaPair);
+    assert(is_valid(partner_entry));
+    peek(responseL2Network_in, ResponseMsg) {
+      cache_entry.DataBlk := in_msg.DataBlk;
+      undeltaPair(address, cache_entry.deltaPair,
+                  cache_entry.DataBlk, partner_entry.DataBlk,
+                  partner_entry.deltaDirection);
+      cache_entry.isDeltad := false;
+      partner_entry.isDeltad := false;
+      DPRINTF(RubySlicc, "DeltaPair undeltad (legacy udcur): 0x%x and 0x%x\n",
+              address, cache_entry.deltaPair);
+    }
+  }
+
+  // ECE757 DeltaCache Conditions 4 & 5: capture the victim's delta info into
+  // its TBE before rr_deallocateL2CacheBlock destroys the entry. The
+  // captured info is used by the cross-address response handlers (cev,
+  // udte) to reconstruct bytes after the entry is gone.
+  action(cdt_captureDeltaToTBE, "cdt", desc="Capture delta info into TBE before dealloc") {
+    assert(is_valid(tbe));
+    if (is_valid(cache_entry) && cache_entry.isDeltad) {
+      tbe.tbeIsDeltad := true;
+      tbe.tbeDeltaDirection := cache_entry.deltaDirection;
+      tbe.tbeDeltaPair := cache_entry.deltaPair;
+    }
+  }
+
+  // ECE757 DeltaCache Condition 4 scaffolding (on hold): after the evicted
+  // line's WB_Data has landed in tbe.DataBlk, reconstruct the surviving
+  // partner from (tbe.DataBlk +/- delta), clear partner.isDeltad, re-add
+  // partner to map, and wake any stalled requests on partner's address.
   action(udte_undeltaPartnerFromEvictionTBE, "udte", desc="Undelta partner using evicted TBE data") {
     if (is_valid(tbe) && tbe.tbeIsDeltad) {
       Entry partner_entry := getCacheEntry(tbe.tbeDeltaPair);
@@ -739,21 +772,53 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
         partner_entry.isDeltad := false;
         overrideMapping(mapTable, tbe.tbeDeltaPair, partner_entry.DataBlk);
         wakeUpBuffers(tbe.tbeDeltaPair);
-        DPRINTF(RubySlicc, "DeltaPair undeltad (Cond3-EvictMT): 0x%x and 0x%x\n",
+        DPRINTF(RubySlicc, "DeltaPair undeltad (Cond4-EvictPartner): 0x%x and 0x%x\n",
                 address, tbe.tbeDeltaPair);
       }
       tbe.tbeIsDeltad := false;
     }
   }
 
-  // ECE757 DeltaCache Condition 3: send a FWD_PARTNER_DLT to one upper holder
-  // of the partner (= cache_entry.deltaPair), so we can fetch the partner's
-  // ORIGINAL bytes and use them to reconstruct B's original before B's L3
-  // entry leaves the cache. Pick the partner's exclusive owner if any,
-  // else the smallest sharer. If the partner has no upper holder (M state)
-  // we just log -- the eviction will then stall (TODO: cascade-evict the
-  // partner so its data gets back via a normal PUTM path).
-  // This is good but no math has to be done, once we grab partner data we can just set the partners entry in l3 to the data
+  // ECE757 DeltaCache Condition 5: L3 evicting a delta'd line that has upper
+  // sharers. Send FWD_GETM_DLT to the smallest sharer (returns raw V data +
+  // self-invalidates) and INV to all other sharers. The DLT_DATA + INV-acks
+  // combined drain pendingAcks (= sharers.count() set by i_allocateTBE).
+  action(rcm_requestVDataFromSharerAndINVOthers, "rcm", desc="Cond 5: pull raw V from one sharer, INV the rest") {
+    assert(is_valid(cache_entry));
+    assert(is_valid(tbe));
+
+    enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
+      out_msg.addr := address;
+      out_msg.Type := CoherenceRequestType:FWD_GETM_DLT;
+      out_msg.Requestor := machineID;
+      out_msg.Destination.add(cache_entry.Sharers.smallestElement(MachineType:L1Cache));
+      out_msg.MessageSize := MessageSizeType:Request_Control;
+    }
+
+    if (cache_entry.Sharers.count() > 1) {
+      enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
+        out_msg.addr := address;
+        out_msg.Type := CoherenceRequestType:INV;
+        out_msg.Requestor := machineID;
+        out_msg.Destination := cache_entry.Sharers;
+        out_msg.Destination.remove(cache_entry.Sharers.smallestElement(MachineType:L1Cache));
+        out_msg.MessageSize := MessageSizeType:Request_Control;
+      }
+    }
+  }
+
+  // ECE757 DeltaCache: decrement pendingAcks by 1 for a DLT_DATA arrival.
+  // L1's gd_sendDltDataToL2 doesn't carry an AckCount, so we credit it here.
+  action(drd_decrementPendingAckOne, "drd", desc="Decrement pendingAcks by 1 for DLT_DATA") {
+    assert(is_valid(tbe));
+    tbe.pendingAcks := tbe.pendingAcks - 1;
+    APPEND_TRANSITION_COMMENT("DLT_DATA: p ");
+    APPEND_TRANSITION_COMMENT(tbe.pendingAcks);
+  }
+
+  // ECE757 DeltaCache Condition 4 scaffolding (on hold): send FWD_PARTNER_DLT
+  // to one upper holder of the partner so we can fetch the partner's
+  // ORIGINAL bytes for cross-address undelta during eviction.
   action(rpd_requestPartnerDLTData, "rpd", desc="Send FWD_PARTNER_DLT to one of the partner's holders") {
     assert(is_valid(cache_entry));
     Entry partner_entry := getCacheEntry(cache_entry.deltaPair);
@@ -775,24 +840,16 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
           out_msg.MessageSize := MessageSizeType:Request_Control;
         }
       } else {
-        DPRINTF(RubySlicc, "ECE757 Cond3: partner 0x%x has no upper holder (state=%s); evict of 0x%x will stall.\n",
+        DPRINTF(RubySlicc, "ECE757 Cond4: partner 0x%x has no upper holder (state=%s); evict of 0x%x will stall.\n",
                 cache_entry.deltaPair, partner_entry.CacheState, address);
       }
     }
   }
 
-  // ECE757 DeltaCache Condition 3: DLT_DATA arrived for the partner's
-  // address. The transition is keyed on the PARTNER (A) -- this entry is
-  // A's L3 entry. The line being evicted (B) is at cache_entry.deltaPair;
-  // its L3 entry is already deallocated (we did rr_deallocateL2CacheBlock
-  // in the L2_Replacement_Delta transition) but its TBE is still alive
-  // and holds the captured delta info + original Dirty flag.
-  //
-  // Steps: write incoming bytes into A's DataBlk (now original A);
-  // reconstruct B = A +/- delta using B's stored direction; push B to
-  // memory (data if dirty, ack if clean) using the reconstructed bytes;
-  // clear A.isDeltad; re-add A to the map table; deallocate B's TBE; wake
-  // any stalled requests on B's address.
+  // ECE757 DeltaCache Condition 4 scaffolding (on hold): cross-address
+  // handler for DLT_DATA arriving for the partner of an evicting line.
+  // Reconstructs the evicting line's bytes from the freshly-arrived
+  // partner data + stored delta, ships to memory, deallocates B's TBE.
   action(cev_crossUndeltaCompleteEvict, "cev", desc="Cross-address undelta + finish B's eviction") {
     assert(is_valid(cache_entry));
     assert(cache_entry.isDeltad);
@@ -800,17 +857,12 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     assert(is_valid(b_tbe));
     assert(b_tbe.tbeIsDeltad);
     peek(responseL2Network_in, ResponseMsg) {
-      // A now holds the original.
       cache_entry.DataBlk := in_msg.DataBlk;
-      // Reconstruct B's original directly into b_tbe.DataBlk (B's L3 entry
-      // is gone; the TBE is the only place B's bytes live).
       undeltaPair(address, cache_entry.deltaPair,
                   cache_entry.DataBlk, b_tbe.DataBlk,
                   b_tbe.tbeDeltaDirection);
       cache_entry.isDeltad := false;
-      // Re-add A to map table so it's eligible for future pairings.
       overrideMapping(mapTable, address, cache_entry.DataBlk);
-      // Push B to memory now that it has correct bytes.
       if (b_tbe.Dirty) {
         enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
           out_msg.addr := cache_entry.deltaPair;
@@ -830,10 +882,12 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
           out_msg.MessageSize := MessageSizeType:Response_Control;
         }
       }
-      // Drop B's TBE; wake anyone stalled on B's address.
-      TBEs.deallocate(cache_entry.deltaPair);
+      // V's TBE stays alive; M_I_DLT, Mem_Ack -> NP deallocates it after
+      // memory acks the writeback. Waking V's queues here lets any L1
+      // request stalled on V's address retry and re-stall on M_I_DLT until
+      // the ack lands.
       wakeUpBuffers(cache_entry.deltaPair);
-      DPRINTF(RubySlicc, "DeltaPair undeltad (Cond3-Evict): A=0x%x B(evicted)=0x%x\n",
+      DPRINTF(RubySlicc, "DeltaPair undeltad (Cond4-Evict): A=0x%x B(evicted)=0x%x\n",
               address, cache_entry.deltaPair);
     }
   }
@@ -1330,13 +1384,13 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   }
 
   transition({IM, IS, ISS, SS_MB, MT_MB, S_MB, MT_IIB, MT_IB, MT_SB,
-              SS_DLT_GM, MT_DLT_GM, M_DLT_GM},
-             {L2_Replacement, L2_Replacement_clean}) {
+              M_DLT_GM, M_I_DLT, SS_I_DLT},
+             {L2_Replacement, L2_Replacement_clean, L2_Replacement_Delta}) {
     zz_stallAndWaitL1RequestQueue;
   }
 
   transition({IM, IS, ISS, SS_MB, MT_MB, S_MB, MT_IIB, MT_IB, MT_SB,
-              SS_DLT_GM, MT_DLT_GM, M_DLT_GM},
+              M_DLT_GM, M_I_DLT, SS_I_DLT},
              MEM_Inv) {
     zn_recycleResponseNetwork;
   }
@@ -1450,69 +1504,157 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     jj_popL1RequestQueue;
   }
 
-  // ECE757 DeltaCache Condition 2: GETM hit a delta-paired line. Stall in a
-  // transient state while we pull originals from upper, then complete the
-  // GETM normally with reconstructed data.
-  transition(SS, L1_GETM_Dlt_SS, SS_DLT_GM) {
+  // ECE757 DeltaCache Condition 1 (SS path): GETM landed on a delta'd entry
+  // in SS. Requestor was a sharer with raw bytes and the GETM carries them,
+  // so we undelta inline (no round-trip), INV the other sharers, ship the
+  // reconstructed bytes + AckCount to the requestor, and proceed straight
+  // to the standard SS_MB block (which lands in MT on Exclusive_Unblock).
+  transition(SS, L1_GETM_Dlt_SS, SS_MB) {
     i_allocateTBE;
     xx_recordGetXL1ID;
-    rdss_requestDeltaFromOneSharer;
+    rdss_undeltaInlineFromGETM;
+    arpm_addPartnerBackToMap;
+    eedlt_sendDataToGetXRequestorWithAcks;
+    s_deallocateTBE;
     set_setMRU;
     uu_profileMiss;
     jj_popL1RequestQueue;
   }
-  //dont ever have deltad pair with mt
-  /*transition(MT, L1_GETM_Dlt_MT, MT_DLT_GM) {
-    i_allocateTBE;
-    xx_recordGetXL1ID;
-    rdmt_requestDeltaFromExclusive;
-    set_setMRU;
-    uu_profileMiss;
-    jj_popL1RequestQueue;
-  }*/
 
-  // M state delta'd: A is L3-only and partner B is upper. Reconstructing A
-  // requires fetching B's data via a different (cross-address) flow we
-  // haven't built yet. For now stall the GETM; eventually B's natural
-  // writeback (Condition 1) will undelta the pair and unblock this GETM.
-  //This ^^ is completely wrong, i updated to act like SS->M
+  // ECE757 DeltaCache Condition 1 (M path): GETM on a delta'd L3-only entry.
+  // Requestor has no copy of B; B has no upper holder. Send FWD_PARTNER_DLT
+  // to one of A's sharers and park in M_DLT_GM. The DLT_DATA response will
+  // arrive at A's address and be picked up by the SS Dlt_WB_Data handler.
   transition(M, L1_GETM_Dlt_M, M_DLT_GM) {
-     i_allocateTBE;
+    i_allocateTBE;
     xx_recordGetXL1ID;
-    rdss_requestDeltaFromOneSharer;
+    rmd_requestPartnerForMCrossFetch;
     set_setMRU;
     uu_profileMiss;
     jj_popL1RequestQueue;
   }
 
-  // After the chosen sharer/owner sends DLT_DATA back, we have the original.
-  // Reconstruct partner, ship to the original GETM requester with the right
-  // AckCount, and proceed to the standard SS_MB / MT_MB blocking state to
-  // collect the unblock from the new exclusive owner.
-  transition(SS_DLT_GM, Dlt_WB_Data, SS_MB) {
-    udcur_undeltaWithReceivedAsCurrent;
-    arpm_addPartnerBackToMap;
-    eedlt_sendDataToGetXRequestorWithAcks;
-    s_deallocateTBE;
+  // Cross-address handler: the FWD_PARTNER_DLT response (= A's bytes) lands
+  // here at A's address. crm_ adopts A's bytes, reconstructs B, ships DATA
+  // to B's GETM requestor (recorded in B's TBE), and re-adds A to the map
+  // table. A stays in SS; B is parked in M_DLT_GM and will exit on the
+  // requestor's Exclusive_Unblock.
+  transition(SS, Dlt_WB_Data) {
+    crm_crossUndeltaForMGetm;
     o_popIncomingResponseQueue;
   }
 
-//Not right
-/*
-  transition(MT_DLT_GM, Dlt_WB_Data, MT_MB) {
-    udcur_undeltaWithReceivedAsCurrent;
-    arpm_addPartnerBackToMap;
-    eedlt_sendDataToGetXRequestorWithAcks;
+  // The GETM requestor has acquired exclusivity and sent Exclusive_Unblock
+  // back at B's address. Mark the new owner and land in MT.
+  transition(M_DLT_GM, Exclusive_Unblock, MT) {
+    mmu_markOwnerFromUnblock;
     s_deallocateTBE;
-    o_popIncomingResponseQueue;
-  }*/
+    k_popUnblockQueue;
+    kd_wakeUpDependents;
+  }
 
-  // While stalled in the delta-GETM transient states, recycle other L1
-  // requests on this address so they retry once we complete.
-  transition({SS_DLT_GM, MT_DLT_GM, M_DLT_GM},
+  // Stall any other request on this address while we're parked in M_DLT_GM.
+  transition(M_DLT_GM,
              {L1_GETS, L1_GET_INSTR, L1_GETM, L1_PUTM,
               L1_PUTM_Last, L1_PUTM_NotLast,
-              L1_GETM_Dlt_SS, L1_GETM_Dlt_MT, L1_GETM_Dlt_M}) {
+              L1_GETM_Dlt_SS, L1_GETM_Dlt_M}) {
+    zz_stallAndWaitL1RequestQueue;
+  }
+
+  // ============================================================
+  // ECE757 DeltaCache Condition 4: L3 evicting a delta-paired victim that is
+  // L3-only (M state). Partner is upper-resident in SS. We can't write the
+  // delta bytes to memory, and the requestor of the new line needs the slot.
+  // Cross-fetch the partner's raw bytes from one of its sharers, undelta the
+  // victim into the TBE, push the reconstructed bytes to memory, then drain
+  // the standard M_I -> NP cycle on Mem_Ack.
+  // ============================================================
+  transition(M, L2_Replacement_Delta, M_I_DLT) {
+    i_allocateTBE;
+    cdt_captureDeltaToTBE;
+    rpd_requestPartnerDLTData;
+    rr_deallocateL2CacheBlock;
+  }
+
+  // Cross-address handler: DLT_DATA arrived at the partner P's address.
+  // cev_crossUndeltaCompleteEvict reconstructs V's bytes from P + delta,
+  // ships MEMORY_DATA tagged at V's address, and clears P's deltad flag.
+  // P stays in SS (no state change here). V's TBE persists -- the matching
+  // M_I_DLT, Mem_Ack -> NP transition will deallocate it.
+  transition(SS, Dlt_Evict_Data) {
+    cev_crossUndeltaCompleteEvict;
+    o_popIncomingResponseQueue;
+  }
+
+  // Memory acks the writeback; finalize V's eviction.
+  transition(M_I_DLT, Mem_Ack, NP) {
+    s_deallocateTBE;
+    o_popIncomingResponseQueue;
+    kd_wakeUpDependents;
+  }
+
+  // While parked in M_I_DLT (partner-fetch in flight, then memory ack
+  // pending), stall L1 requests on V's address. L2_Replacement* and MEM_Inv
+  // for this state are handled by the broad stall lists above.
+  transition(M_I_DLT,
+             {L1_GETS, L1_GET_INSTR, L1_GETM, L1_PUTM,
+              L1_PUTM_Last, L1_PUTM_NotLast,
+              L1_GETM_Dlt_SS, L1_GETM_Dlt_M}) {
+    zz_stallAndWaitL1RequestQueue;
+  }
+
+  // ============================================================
+  // ECE757 DeltaCache Condition 5: L3 evicting a delta-paired victim that is
+  // in SS (has upper sharers). Pull raw V bytes from one sharer via
+  // FWD_GETM_DLT, INV the rest, use V's bytes to undelta the partner P
+  // (which stays in L3 as raw), then write V to memory.
+  // ============================================================
+  transition(SS, L2_Replacement_Delta, SS_I_DLT) {
+    i_allocateTBE;
+    cdt_captureDeltaToTBE;
+    rcm_requestVDataFromSharerAndINVOthers;
+    rr_deallocateL2CacheBlock;
+  }
+
+  // INV-acks from the non-chosen sharers.
+  transition(SS_I_DLT, Ack) {
+    q_updateAck;
+    o_popIncomingResponseQueue;
+  }
+
+  // All INV-acks in but DLT_DATA hasn't arrived yet -- stay parked.
+  transition(SS_I_DLT, Ack_all) {
+    q_updateAck;
+    o_popIncomingResponseQueue;
+  }
+
+  // DLT_DATA arrived but more INV-acks still pending. Adopt the bytes,
+  // undelta P now (P becomes raw in L3), credit one ack for the chosen
+  // sharer's response, stay parked for the remaining INV-acks.
+  transition(SS_I_DLT, Dlt_Evict_Self_Partial) {
+    qq_writeDataToTBE;
+    udte_undeltaPartnerFromEvictionTBE;
+    drd_decrementPendingAckOne;
+    o_popIncomingResponseQueue;
+  }
+
+  // DLT_DATA arrived and it's the last response (no more INV-acks expected).
+  // Adopt V's bytes, undelta P, ship V's data to memory, and proceed to the
+  // standard M_I -> NP drain on Mem_Ack.
+  transition(SS_I_DLT, Dlt_Evict_Self_Last, M_I) {
+    qq_writeDataToTBE;
+    udte_undeltaPartnerFromEvictionTBE;
+    drd_decrementPendingAckOne;
+    ct_exclusiveReplacementFromTBE;
+    o_popIncomingResponseQueue;
+  }
+
+  // Stall L1 requests on V's address while parked in SS_I_DLT. L2_Replacement*
+  // and MEM_Inv for this state are handled by the broad stall lists above.
+  transition(SS_I_DLT,
+             {L1_GETS, L1_GET_INSTR, L1_GETM, L1_PUTM,
+              L1_PUTM_Last, L1_PUTM_NotLast,
+              L1_GETM_Dlt_SS, L1_GETM_Dlt_M}) {
     zz_stallAndWaitL1RequestQueue;
   }
 
@@ -1691,23 +1833,11 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition({MT_I, MCT_I}, WB_Data, M_I) {
     qq_writeDataToTBE;
-    udte_undeltaPartnerFromEvictionTBE;
     ct_exclusiveReplacementFromTBE;
     o_popIncomingResponseQueue;
   }
 
-  transition(MCT_I, WB_Data_clean, M_I) {
-    // ECE757 DeltaCache Condition 3: capture the owner's clean data into the
-    // TBE so udte can undelta the partner. The standard flow doesn't need
-    // qq here (clean replacement just acks memory, no data writeback) but
-    // we need the original bytes for partner reconstruction.
-    qq_writeDataToTBE;
-    udte_undeltaPartnerFromEvictionTBE;
-    c_exclusiveCleanReplacement;
-    o_popIncomingResponseQueue;
-  }
-
-  transition(MCT_I, Ack_all, M_I) {
+  transition(MCT_I, {WB_Data_clean, Ack_all}, M_I) {
     c_exclusiveCleanReplacement;
     o_popIncomingResponseQueue;
   }
