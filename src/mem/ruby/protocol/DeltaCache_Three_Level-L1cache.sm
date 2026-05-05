@@ -469,6 +469,17 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
         out_msg.MessageSize := MessageSizeType:Control;
         out_msg.AccessMode := in_msg.AccessMode;
         out_msg.Prefetch := in_msg.Prefetch;
+        // ECE757 DeltaCache: when upgrading from S/SS we already hold raw
+        // bytes; carry them on the GETM so the L3 can undelta inline if it
+        // landed on a delta-paired entry (rdss_undeltaInlineFromGETM).
+        // From I (cache_entry was just allocated by oo_allocateCacheBlock,
+        // data is zeros) we don't attach -- the L3 must not adopt zeros.
+        if (is_valid(cache_entry) &&
+            (cache_entry.CacheState == State:S ||
+             cache_entry.CacheState == State:SS)) {
+          out_msg.DataBlk := cache_entry.DataBlk;
+          out_msg.Dirty := cache_entry.Dirty;
+        }
       }
     }
   }
@@ -1040,13 +1051,29 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
     l_popL2RequestQueue;
   }
 
-  // S/M states still hold the line in L0; stall the delta WB request so the
-  // existing L0-invalidation flow (or the line's natural L0 eviction) can
-  // complete first. TODO: build out S_IL0_Dlt / M_IL0_Dlt transient states
-  // for a proper handoff. For partner reads in MM/M state the pair would
-  // already have been undeltad by the modify path (Condition 2 itself), so
-  // a Fwd_Partner_Dlt here would be a protocol bug.
-  transition({S, M}, {Fwd_GETM_Dlt, Fwd_Partner_Dlt}) {
+  // ECE757 DeltaCache: in S state the L0 also holds the line (read-only),
+  // but L1's cache_entry.DataBlk is current (S is read-only, no modify
+  // possible without first transitioning out). Fwd_Partner_Dlt is a
+  // non-invalidating read -- ship from our DataBlk and stay in S. L0 keeps
+  // its copy, no eviction needed. This is what unblocks the deadlock chain
+  // where L0 was parked waiting for the partner-fetch response that this
+  // very transition has to produce.
+  transition(S, Fwd_Partner_Dlt) {
+    gd_sendDltDataToL2;
+    l_popL2RequestQueue;
+  }
+
+  // FWD_GETM_DLT in S/M still needs to invalidate L0 first (it's a write).
+  // Stall until the L0 evicts naturally or the existing L0-invalidation
+  // flow completes. TODO: build out S_IL0_Dlt / M_IL0_Dlt transient states
+  // for a proper handoff. For partner reads in M state the pair would
+  // already have been undeltad by the modify path (the MT+delta invariant
+  // would have been violated), so a Fwd_Partner_Dlt here is a protocol bug.
+  transition({S, M}, Fwd_GETM_Dlt) {
+    z2_stallAndWaitL2Queue;
+  }
+
+  transition(M, Fwd_Partner_Dlt) {
     z2_stallAndWaitL2Queue;
   }
 

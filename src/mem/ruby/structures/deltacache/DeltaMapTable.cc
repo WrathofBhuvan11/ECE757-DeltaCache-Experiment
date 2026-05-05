@@ -106,6 +106,17 @@ void DeltaMapTable::overrideMapping(Addr addr, const DataBlock& blk) {
            sig_val, index, addr);
 }
 
+void DeltaMapTable::clearMapping(Addr addr, const DataBlock& blk) {
+    uint64_t sig_val = generateMapValue(blk);
+    uint32_t index = sig_val % m_table_entries;
+    if (m_valid_bits[index] && m_direct_map_table[index] == addr) {
+        m_valid_bits[index] = false;
+        m_direct_map_table[index] = 0;
+        inform("ECE757 Delta Clear: Sig [0x%x] | Index %d | Line 0x%lx removed (S->M unpaired)\n",
+               sig_val, index, addr);
+    }
+}
+
 
 
 } // namespace ruby

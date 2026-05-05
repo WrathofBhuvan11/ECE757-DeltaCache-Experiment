@@ -26,6 +26,11 @@ class DeltaMapTable : public SimObject {
     // recordMapping reported a match but the partner was no longer cached,
     // so this addr becomes the new candidate for future pairings.
     void overrideMapping(Addr addr, const DataBlock& blk);
+    // Clear addr's slot (computed from blk's signature) iff it currently
+    // holds addr. Used when an unpaired line transitions to L3-only / M:
+    // it's no longer a worthwhile pairing candidate (no upper sharer ever
+    // re-anchored its content), so drop it from the map table.
+    void clearMapping(Addr addr, const DataBlock& blk);
 
   private:
     int pair_count; // For tracking the number of matched pairs
@@ -60,6 +65,10 @@ recordMappingVoid(DeltaMapTable &table, Addr addr, const DataBlock &blk)
 
 inline void overrideMapping(DeltaMapTable& table, Addr addr, const DataBlock& blk) {
     table.overrideMapping(addr, blk);
+}
+
+inline void clearMapping(DeltaMapTable& table, Addr addr, const DataBlock& blk) {
+    table.clearMapping(addr, blk);
 }
 
 /**
@@ -135,7 +144,7 @@ inline bool computeAndStoreDelta(Addr a_addr, Addr b_addr,
  * with the reconstructed originals.
  */
 inline void
-undeltaPair(Addr known_addr, Addr partner_addr, DataBlock &known_blk,
+undeltaPair(Addr known_addr, Addr partner_addr, const DataBlock &known_blk,
             DataBlock &partner_blk, bool partner_dir)
 {
     auto blkToHex = [](const DataBlock &blk) {
