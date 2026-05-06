@@ -2595,7 +2595,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(MT_IIB, {WB_Data, WB_Data_clean}, MT_SB) {
     m_writeDataToCache;
-    recordDelta;
+    //recordDelta;
     o_popIncomingResponseQueue;
   }
 
