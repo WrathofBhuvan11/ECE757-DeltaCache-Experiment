@@ -1097,8 +1097,45 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
     z2_stallAndWaitL2Queue;
   }
 
+  // ECE757 DeltaCache: IM means we've issued our own GETM and don't have
+  // the line. The FWD_GETM_DLT reached us either via a stale-sharer race
+  // (we were a sharer at FWD-send time, then evicted + re-stored) or via
+  // the SM -> SM_IL0 -> IM L0-invalidation chain. Either way we have no
+  // data to ship. Stalling deadlocks: L3 is parked in SS_DLT_GM_X waiting
+  // on our DLT_DATA, *and* it's also stalling our own GETM behind that
+  // same SS_DLT_GM_X transient, so neither side advances.
+  //
+  // Send an ACK with AckCount=1 instead, behaving like an INV recipient.
+  // L3's pendingAcks drains to 0, Ack_all fires, and SS_DLT_GM_X completes
+  // by shipping cache_entry.DataBlk. This is correct iff the partner's
+  // own undelta path (rdss_ / uu_ / udte_ / cev_ / crm_) has already run
+  // and overwritten the L3 entry's DataBlk with raw bytes -- which is the
+  // common case once the pair starts dissolving. The L3 Ack_all transition
+  // asserts !cache_entry.isDeltad to catch the (currently unhandled) case
+  // where neither path has run.
+  transition(IM, Fwd_GETM_Dlt) {
+    fi_sendInvAck;
+    l_popL2RequestQueue;
+  }
+
   transition(M, Fwd_Partner_Dlt) {
     z2_stallAndWaitL2Queue;
+  }
+
+  // ECE757 DeltaCache: stale-sharer race -- L1 was a sharer when L3 sent
+  // FWD_PARTNER_DLT, then L1 transitioned to a no-data state before the
+  // message arrived. Possible chains:
+  //   (a) SS -> L1_Replacement -> SINK_WB_ACK -> I, optionally followed
+  //       by a fresh L0 store (I -> IM).
+  //   (b) SS -> Store -> SM -> (my dispatch's L0_Invalidate_Else for
+  //       FWD_GETM_DLT) -> SM_IL0 -> IM.
+  //   (c) Equivalent paths through IS/IS_I via a load.
+  // In each case we have nothing to ship. Drop the request -- L3's
+  // partner-cross-fetch flow (M_DLT_GM / M_DLT_GS / etc.) recovers when
+  // the actual pair-undelta path (uu_ / adgmx_) fires elsewhere and
+  // short-circuits a hand-off to the parked GETM requester.
+  transition({I, IS, IS_I, IM}, Fwd_Partner_Dlt) {
+    l_popL2RequestQueue;
   }
 
   transition(M, L0_Invalidate_Own, M_IL0) {
