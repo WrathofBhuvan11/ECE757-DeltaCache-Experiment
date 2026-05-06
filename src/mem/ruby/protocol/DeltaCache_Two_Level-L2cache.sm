@@ -181,6 +181,11 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     Dlt_Evict_Self_Last,     desc="DLT_DATA for SS_I_DLT eviction; last response";
     // ECE757 DeltaCache: L3 replacing a delta-paired victim.
     L2_Replacement_Delta,    desc="L3 replacing a delta-paired victim";
+    // ECE757 DeltaCache: L3 wants to replace a delta-paired victim but the
+    // partner is in a transient state (e.g., its own eviction is in flight),
+    // so the cross-fetch can't be issued safely. Stall the incoming L1
+    // request until the partner stabilizes / undeltas us.
+    L2_Replacement_Delta_Wait, desc="L3 delta-evict blocked: partner unstable";
     // events initiated by this L2
     L2_Replacement,     desc="L2 Replacement", format="!r";
     L2_Replacement_clean,     desc="L2 Replacement, but data is clean", format="!r";
@@ -612,8 +617,26 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
             // matching transition is not yet written -- the request will
             // stall at runtime if it fires.
             if (L2cache_entry.isDeltad) {
-              trigger(Event:L2_Replacement_Delta,
-                      victim, L2cache_entry, TBEs[victim]);
+              // ECE757 DeltaCache: cross-fetch is only safe when the partner
+              // is in a stable {M, SS} state. If the partner has an eviction
+              // in flight (its cache_entry has been deallocated into a
+              // {SS_I_DLT, M_I_DLT} TBE), or is otherwise transient, we
+              // can't reach raw partner bytes -- and rr_deallocate'ing the
+              // victim now would orphan it in M_I_DLT/SS_I_DLT forever.
+              // Stall the L1 request on the victim's address; the partner's
+              // eviction completion (udte_/cev_) will undelta us and
+              // wakeUpBuffers(victim) the stalled request, which then
+              // retries via the regular L2_Replacement path.
+              Entry partner := getCacheEntry(L2cache_entry.deltaPair);
+              if (is_valid(partner) &&
+                  (partner.CacheState == State:M ||
+                   partner.CacheState == State:SS)) {
+                trigger(Event:L2_Replacement_Delta,
+                        victim, L2cache_entry, TBEs[victim]);
+              } else {
+                trigger(Event:L2_Replacement_Delta_Wait,
+                        victim, L2cache_entry, TBEs[victim]);
+              }
             } else if (isDirty(L2cache_entry)) {
               trigger(Event:L2_Replacement, victim, L2cache_entry, TBEs[victim]);
             } else {
@@ -962,6 +985,12 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
       // request stalled on V's address retry and re-stall on M_I_DLT until
       // the ack lands.
       wakeUpBuffers(cache_entry.deltaPair);
+      // ECE757 DeltaCache: also wake the survivor (cache_entry, this
+      // address) in case an L1 request was stalled trying to evict us via
+      // L2_Replacement_Delta_Wait while V was mid-eviction. We're now
+      // unpaired (isDeltad cleared above), so the retry will route to the
+      // regular L2_Replacement path.
+      wakeUpBuffers(address);
       DPRINTF(RubySlicc, "DeltaPair undeltad (Cond4-Evict): A=0x%x B(evicted)=0x%x\n",
               address, cache_entry.deltaPair);
     }
@@ -1583,6 +1612,17 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     stall_and_wait(L1RequestL2Network_in, address);
   }
 
+  // ECE757 DeltaCache: stall the L1 request keyed on the partner's address.
+  // Used by L2_Replacement_Delta_Wait when the victim is delta-paired but
+  // its partner is in a transient state. The partner's eventual return to a
+  // stable state (or completion of its own eviction) calls
+  // kd_wakeUpDependents at the partner's address, which wakes this stall.
+  action(zwd_stallAndWaitOnPartner, "zwd", desc="stall L1 req on partner addr") {
+    assert(is_valid(cache_entry));
+    Addr partner_addr := cache_entry.deltaPair;
+    stall_and_wait(L1RequestL2Network_in, partner_addr);
+  }
+
   action(zn_recycleResponseNetwork, "zn", desc="recycle memory request") {
     responseL2Network_in.recycle(clockEdge(), cyclesToTicks(recycle_latency));
   }
@@ -1608,7 +1648,8 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   transition({IM, IS, ISS, SS_MB, MT_MB, S_MB, MT_IIB, MT_IB, MT_SB,
               M_DLT_GM, M_I_DLT, SS_I_DLT, SS_DLT_GS, M_DLT_GS,
               SS_DLT_GM_X},
-             {L2_Replacement, L2_Replacement_clean, L2_Replacement_Delta}) {
+             {L2_Replacement, L2_Replacement_clean, L2_Replacement_Delta,
+              L2_Replacement_Delta_Wait}) {
     zz_stallAndWaitL1RequestQueue;
   }
 
@@ -1848,6 +1889,16 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     zz_stallAndWaitL1RequestQueue;
   }
 
+  // ECE757 DeltaCache: stale Unblock from a prior GetS flow on this
+  // address that didn't drain before our GETM pushed the line into
+  // SS_DLT_GM_X. The GETM requester sends Exclusive_Unblock (handled in
+  // SS_MB after we ship), and invalidated sharers don't send Unblock at
+  // all -- so a plain Unblock here is leftover. Pop and ignore, matching
+  // the stable-state pattern at {SS_MB, MT_MB} / {SS, M, MT}.
+  transition(SS_DLT_GM_X, Unblock) {
+    k_popUnblockQueue;
+  }
+
   // ============================================================
   // ECE757 DeltaCache: GETS landed on a delta-paired line. All
   // decompression happens at L3 -- we never ship delta bytes upstairs.
@@ -1917,6 +1968,20 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   }
 
   // ============================================================
+  // ECE757 DeltaCache: partner is in a transient state (e.g., its own
+  // eviction in flight, or a GETS/GETM cross-fetch in flight on the
+  // partner). We can't safely cross-fetch raw partner bytes right now.
+  // Stall the L1 request keyed on the *partner's* address: every path
+  // that returns the partner to a stable state (or completes the
+  // partner's eviction) calls kd_wakeUpDependents at the partner's
+  // address (S_MB->SS Unblock, M_DLT_GM/SS_DLT_GM_X exits, M_I/M_I_DLT
+  // Mem_Ack->NP, etc.). On wake the L1 request retries; by then either
+  // the partner is stable (so dispatch fires L2_Replacement_Delta) or
+  // we've been undeltad in place (isDeltad=false, regular path).
+  transition({M, SS}, L2_Replacement_Delta_Wait) {
+    zwd_stallAndWaitOnPartner;
+  }
+
   // ECE757 DeltaCache Condition 4: L3 evicting a delta-paired victim that is
   // L3-only (M state). Partner is upper-resident in SS. We can't write the
   // delta bytes to memory, and the requestor of the new line needs the slot.

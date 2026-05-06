@@ -375,7 +375,20 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
             trigger(Event:External_Flush_Data, in_msg.addr, cache_entry, tbe);
         } else if (in_msg.Type == CoherenceRequestType:FWD_GETM_DLT) {
             // ECE757 DeltaCache: L2 (arch L3) needs our data + invalidation.
-            trigger(Event:Fwd_GETM_Dlt, in_msg.addr, cache_entry, tbe);
+            // If L0 also holds the line (S/M states at L1), invalidate L0
+            // first via the standard L0_Invalidate_Else handoff. After L0
+            // acks, we land in SS/MM and the FWD_GETM_DLT message replays
+            // through the (SS|MM, Fwd_GETM_Dlt, I) ship-and-invalidate
+            // transition. This mirrors the INV dispatch above. Without
+            // this, (S, Fwd_GETM_Dlt) and (M, Fwd_GETM_Dlt) stall forever
+            // since nothing else evicts L0, and L3 hangs in SS_DLT_GM_X /
+            // SS_I_DLT waiting for our DLT_DATA response.
+            if (is_valid(cache_entry) && inL0Cache(cache_entry.CacheState)) {
+                trigger(Event:L0_Invalidate_Else, in_msg.addr,
+                        cache_entry, tbe);
+            } else {
+                trigger(Event:Fwd_GETM_Dlt, in_msg.addr, cache_entry, tbe);
+            }
         } else if (in_msg.Type == CoherenceRequestType:FWD_PARTNER_DLT) {
             // ECE757 DeltaCache: L2 (arch L3) needs our data, no invalidation.
             trigger(Event:Fwd_Partner_Dlt, in_msg.addr, cache_entry, tbe);
@@ -1059,6 +1072,17 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
   // where L0 was parked waiting for the partner-fetch response that this
   // very transition has to produce.
   transition(S, Fwd_Partner_Dlt) {
+    gd_sendDltDataToL2;
+    l_popL2RequestQueue;
+  }
+
+  // ECE757 DeltaCache: SM means we were S (had raw bytes) and have issued
+  // GETM upward but haven't received Data_all_Acks yet. No modify has
+  // happened (and can't until M), so the DataBlk is still the valid raw
+  // S-state copy. L3 may pick us as a B-sharer for a partner cross-fetch
+  // before it dequeues our GETM (we're still in its Sharers list). Ship
+  // the bytes non-invalidatingly and stay in SM -- L0 keeps its copy.
+  transition(SM, Fwd_Partner_Dlt) {
     gd_sendDltDataToL2;
     l_popL2RequestQueue;
   }
