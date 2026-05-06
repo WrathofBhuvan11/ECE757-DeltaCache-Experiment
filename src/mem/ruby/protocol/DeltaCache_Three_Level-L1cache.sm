@@ -1130,6 +1130,17 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
     l_popL2RequestQueue;
   }
 
+  // ECE757 DeltaCache: same stale-sharer race for FWD_GETM_DLT in
+  // I/IS/IS_I. With the rcm_ broadcast, every sharer gets a copy, so
+  // sharers that already evicted (now in I) or are mid-fetch for a
+  // different access (IS/IS_I) receive the request. They have no data
+  // to ship -- ack with AckCount=1 just like the IM handler so L3's
+  // pendingAcks drains.
+  transition({I, IS, IS_I}, Fwd_GETM_Dlt) {
+    fi_sendInvAck;
+    l_popL2RequestQueue;
+  }
+
   transition(M, Fwd_Partner_Dlt) {
     z2_stallAndWaitL2Queue;
   }

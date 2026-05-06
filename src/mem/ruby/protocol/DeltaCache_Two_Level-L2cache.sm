@@ -756,6 +756,20 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
             DPRINTF(RubySlicc,
                     "DeltaCache: short-circuit M_DLT_GM at 0x%x via 0x%x uu_\n",
                     cache_entry.deltaPair, address);
+          } else if (is_valid(partner_tbe) &&
+                     partner_tbe.TBEState == State:M_DLT_GS) {
+            enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+              out_msg.addr := cache_entry.deltaPair;
+              out_msg.Type := CoherenceResponseType:DATA;
+              out_msg.Sender := machineID;
+              out_msg.Destination := partner_tbe.L1_GetS_IDs;
+              out_msg.DataBlk := partner_entry.DataBlk;
+              out_msg.MessageSize := MessageSizeType:Response_Data;
+              out_msg.AckCount := 0;
+            }
+            DPRINTF(RubySlicc,
+                    "DeltaCache: short-circuit M_DLT_GS at 0x%x via 0x%x uu_\n",
+                    cache_entry.deltaPair, address);
           }
           // Wake any stalled requests on the partner's address (an M_DLT_GM
           // stall could be parked there waiting for partner data).
@@ -793,12 +807,73 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
       }
 
       Entry partner_entry := getCacheEntry(cache_entry.deltaPair);
-      cache_entry.DataBlk := in_msg.DataBlk;
-      undeltaPair(address, cache_entry.deltaPair,
-                  cache_entry.DataBlk, partner_entry.DataBlk,
-                  partner_entry.deltaDirection);
-      cache_entry.isDeltad := false;
-      partner_entry.isDeltad := false;
+      // ECE757 DeltaCache: guard against partner_entry being invalid --
+      // partner may be mid-eviction (cache_entry deallocated for SS_I_DLT
+      // / M_I_DLT) at the moment rdss_ runs. Without the guard,
+      // dereferencing partner_entry.DataBlk would crash. The cache_entry
+      // is still paired (entry-level isDeltad=true), so we still have to
+      // dispose of the GETM somehow -- shipping cache_entry.DataBlk
+      // unmodified would leak delta bytes. For now, only run the inline
+      // undelta when partner_entry is valid; if not, fall through with
+      // GETM data still adopted but no partner reconstruction (the
+      // partner's eviction flow handles its own undelta via udte_/cev_).
+      if (is_valid(partner_entry) && partner_entry.isDeltad) {
+        cache_entry.DataBlk := in_msg.DataBlk;
+        undeltaPair(address, cache_entry.deltaPair,
+                    cache_entry.DataBlk, partner_entry.DataBlk,
+                    partner_entry.deltaDirection);
+        cache_entry.isDeltad := false;
+        partner_entry.isDeltad := false;
+      } else {
+        // Partner not available for reconstruction -- adopt GETM raw bytes
+        // and clear our isDeltad. Partner's eviction (M_I_DLT / SS_I_DLT)
+        // will reconstruct itself from its own TBE buffer or sharer data.
+        cache_entry.DataBlk := in_msg.DataBlk;
+        cache_entry.isDeltad := false;
+        DPRINTF(RubySlicc,
+                "DeltaCache: rdss_ partial at 0x%x (partner=0x%x mid-eviction or unpaired)\n",
+                address, cache_entry.deltaPair);
+      }
+      // ECE757 DeltaCache: short-circuit a partner stuck in M_DLT_GM.
+      // If the partner was running a Cond1-M cross-fetch waiting on raw
+      // bytes from one of OUR sharers, the FWD_PARTNER_DLT response is
+      // now stale -- when it lands at our address, crm_'s idempotency
+      // guard will drop it because we've just cleared isDeltad on both
+      // sides. Ship the partner's now-raw bytes directly to its GETM
+      // requestor (recorded in the partner's TBE) so its M_DLT_GM exits
+      // on Exclusive_Unblock instead of deadlocking.
+      TBE partner_tbe := TBEs[cache_entry.deltaPair];
+      if (is_valid(partner_tbe) &&
+          partner_tbe.TBEState == State:M_DLT_GM) {
+        enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+          out_msg.addr := cache_entry.deltaPair;
+          out_msg.Type := CoherenceResponseType:DATA;
+          out_msg.Sender := machineID;
+          out_msg.Destination.add(partner_tbe.L1_GetX_ID);
+          out_msg.DataBlk := partner_entry.DataBlk;
+          out_msg.MessageSize := MessageSizeType:Response_Data;
+          out_msg.AckCount := 0;
+        }
+        wakeUpBuffers(cache_entry.deltaPair);
+        DPRINTF(RubySlicc,
+                "DeltaCache: short-circuit M_DLT_GM at 0x%x via 0x%x rdss_\n",
+                cache_entry.deltaPair, address);
+      } else if (is_valid(partner_tbe) &&
+                 partner_tbe.TBEState == State:M_DLT_GS) {
+        enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+          out_msg.addr := cache_entry.deltaPair;
+          out_msg.Type := CoherenceResponseType:DATA;
+          out_msg.Sender := machineID;
+          out_msg.Destination := partner_tbe.L1_GetS_IDs;
+          out_msg.DataBlk := partner_entry.DataBlk;
+          out_msg.MessageSize := MessageSizeType:Response_Data;
+          out_msg.AckCount := 0;
+        }
+        wakeUpBuffers(cache_entry.deltaPair);
+        DPRINTF(RubySlicc,
+                "DeltaCache: short-circuit M_DLT_GS at 0x%x via 0x%x rdss_\n",
+                cache_entry.deltaPair, address);
+      }
       DPRINTF(RubySlicc, "DeltaPair undeltad (Cond1-SS): 0x%x and 0x%x\n",
               address, cache_entry.deltaPair);
     }
@@ -809,16 +884,24 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   // A's original bytes. The DLT_DATA response will arrive at A's address
   // and be picked up by the SS Dlt_WB_Data handler, which reconstructs B
   // and ships to B's GETM requestor.
-  action(rmd_requestPartnerForMCrossFetch, "rmd", desc="M: send FWD_PARTNER_DLT to one of A's sharers") {
+  action(rmd_requestPartnerForMCrossFetch, "rmd", desc="M: broadcast FWD_PARTNER_DLT to all of A's sharers") {
     assert(is_valid(cache_entry));
     Entry partner_entry := getCacheEntry(cache_entry.deltaPair);
     assert(is_valid(partner_entry));
     assert(partner_entry.CacheState == State:SS);
+    // ECE757 DeltaCache: broadcast to ALL of partner's sharers, not just
+    // the smallest. Robust to the stale-sharer race (where the chosen
+    // recipient evicted/upgraded between FWD selection and delivery, and
+    // drops the request via my (I/IS/IS_I/IM, Fwd_Partner_Dlt) handlers).
+    // The first DLT_DATA arrival runs crm_, undeltas + ships to GETM
+    // requester, and clears isDeltad on both. Subsequent arrivals are
+    // dropped via the dispatch's isDeltad gate -> Dlt_WB_Data -> idempotent
+    // crm_ no-op.
     enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
       out_msg.addr := cache_entry.deltaPair;
       out_msg.Type := CoherenceRequestType:FWD_PARTNER_DLT;
       out_msg.Requestor := machineID;
-      out_msg.Destination.add(partner_entry.Sharers.smallestElement(MachineType:L1Cache));
+      out_msg.Destination := partner_entry.Sharers;
       out_msg.MessageSize := MessageSizeType:Request_Control;
     }
   }
@@ -834,16 +917,18 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   // partner's own flow eventually unblock us via uu_/adgmx_ short-circuit
   // or a future undelta path.
   action(rmd_safe_requestPartnerXfetch, "rmds",
-         desc="Permissive FWD_PARTNER_DLT to any partner sharer") {
+         desc="Permissive broadcast FWD_PARTNER_DLT to all partner sharers") {
     assert(is_valid(cache_entry));
     Entry partner_entry := getCacheEntry(cache_entry.deltaPair);
     if (is_valid(partner_entry) &&
         partner_entry.Sharers.count() > 0) {
+      // Broadcast to all of partner's sharers (same robustness rationale
+      // as rmd_); first DLT_DATA wins via crm_, rest drop.
       enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
         out_msg.addr := cache_entry.deltaPair;
         out_msg.Type := CoherenceRequestType:FWD_PARTNER_DLT;
         out_msg.Requestor := machineID;
-        out_msg.Destination.add(partner_entry.Sharers.smallestElement(MachineType:L1Cache));
+        out_msg.Destination := partner_entry.Sharers;
         out_msg.MessageSize := MessageSizeType:Request_Control;
       }
     } else {
@@ -858,36 +943,49 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   // delta'd; B is the partner sitting in M_DLT_GM with its TBE holding the
   // GETM requestor. Adopt A's bytes, reconstruct B, ship DATA to B's
   // requestor with AckCount=0 (B had no upper holders), wake B's address.
+  // ECE757 DeltaCache: idempotent / stale-tolerant. crm_ runs in
+  // (SS, Dlt_WB_Data) which is the catch-all landing for late DLT_DATA
+  // arrivals on a paired SS line. If conditions aren't met (line already
+  // unpaired by another path, partner cache entry gone, partner TBE
+  // already deallocated because its M_DLT_GM exited via Exclusive_Unblock
+  // or via uu_/adgmx_ short-circuit), treat the response as a redundant
+  // stale arrival and no-op. Only the inner peek block runs when the
+  // full cross-fetch precondition holds.
   action(crm_crossUndeltaForMGetm, "crm", desc="Cross-undelta for M_DLT_GM, ship to B's requestor") {
     assert(is_valid(cache_entry));
-    assert(cache_entry.isDeltad);
-    Entry b_entry := getCacheEntry(cache_entry.deltaPair);
-    assert(is_valid(b_entry));
-    assert(b_entry.isDeltad);
-    TBE b_tbe := TBEs[cache_entry.deltaPair];
-    assert(is_valid(b_tbe));
-    peek(responseL2Network_in, ResponseMsg) {
-      // Adopt A's bytes into A's entry, then reconstruct B's bytes in place.
-      cache_entry.DataBlk := in_msg.DataBlk;
-      undeltaPair(address, cache_entry.deltaPair,
-                  cache_entry.DataBlk, b_entry.DataBlk,
-                  b_entry.deltaDirection);
-      cache_entry.isDeltad := false;
-      b_entry.isDeltad := false;
-      // Re-add A to map table so it's eligible for future pairings.
-      overrideMapping(mapTable, address, cache_entry.DataBlk);
-      // Ship reconstructed B to B's GETM requestor.
-      enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
-        out_msg.addr := cache_entry.deltaPair;
-        out_msg.Type := CoherenceResponseType:DATA;
-        out_msg.Sender := machineID;
-        out_msg.Destination.add(b_tbe.L1_GetX_ID);
-        out_msg.DataBlk := b_entry.DataBlk;
-        out_msg.MessageSize := MessageSizeType:Response_Data;
-        out_msg.AckCount := 0;
+    if (cache_entry.isDeltad) {
+      Entry b_entry := getCacheEntry(cache_entry.deltaPair);
+      TBE b_tbe := TBEs[cache_entry.deltaPair];
+      if (is_valid(b_entry) && b_entry.isDeltad && is_valid(b_tbe)) {
+        peek(responseL2Network_in, ResponseMsg) {
+          // Adopt A's bytes into A's entry, then reconstruct B's bytes in place.
+          cache_entry.DataBlk := in_msg.DataBlk;
+          undeltaPair(address, cache_entry.deltaPair,
+                      cache_entry.DataBlk, b_entry.DataBlk,
+                      b_entry.deltaDirection);
+          cache_entry.isDeltad := false;
+          b_entry.isDeltad := false;
+          // Re-add A to map table so it's eligible for future pairings.
+          overrideMapping(mapTable, address, cache_entry.DataBlk);
+          // Ship reconstructed B to B's GETM requestor.
+          enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+            out_msg.addr := cache_entry.deltaPair;
+            out_msg.Type := CoherenceResponseType:DATA;
+            out_msg.Sender := machineID;
+            out_msg.Destination.add(b_tbe.L1_GetX_ID);
+            out_msg.DataBlk := b_entry.DataBlk;
+            out_msg.MessageSize := MessageSizeType:Response_Data;
+            out_msg.AckCount := 0;
+          }
+          DPRINTF(RubySlicc, "DeltaPair undeltad (Cond1-M cross): A=0x%x B=0x%x\n",
+                  address, cache_entry.deltaPair);
+        }
+      } else {
+        DPRINTF(RubySlicc,
+                "DeltaCache: crm_ skipped at 0x%x (partner=0x%x b_entry_valid=%d b_tbe_valid=%d) -- stale\n",
+                address, cache_entry.deltaPair,
+                is_valid(b_entry), is_valid(b_tbe));
       }
-      DPRINTF(RubySlicc, "DeltaPair undeltad (Cond1-M cross): A=0x%x B=0x%x\n",
-              address, cache_entry.deltaPair);
     }
   }
 
@@ -968,6 +1066,41 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
                     partner_entry.deltaDirection);
         partner_entry.isDeltad := false;
         overrideMapping(mapTable, tbe.tbeDeltaPair, partner_entry.DataBlk);
+        // ECE757 DeltaCache: short-circuit a partner stuck in M_DLT_GM
+        // (mirrors the rdss_/uu_/adgmx_ pattern). The partner's pending
+        // FWD_PARTNER_DLT response will land at our address (the evicting
+        // line) post-undelta and be dropped; ship the partner's now-raw
+        // bytes directly to its GETM requester so its M_DLT_GM exits.
+        TBE partner_tbe := TBEs[tbe.tbeDeltaPair];
+        if (is_valid(partner_tbe) &&
+            partner_tbe.TBEState == State:M_DLT_GM) {
+          enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+            out_msg.addr := tbe.tbeDeltaPair;
+            out_msg.Type := CoherenceResponseType:DATA;
+            out_msg.Sender := machineID;
+            out_msg.Destination.add(partner_tbe.L1_GetX_ID);
+            out_msg.DataBlk := partner_entry.DataBlk;
+            out_msg.MessageSize := MessageSizeType:Response_Data;
+            out_msg.AckCount := 0;
+          }
+          DPRINTF(RubySlicc,
+                  "DeltaCache: short-circuit M_DLT_GM at 0x%x via 0x%x udte_\n",
+                  tbe.tbeDeltaPair, address);
+        } else if (is_valid(partner_tbe) &&
+                   partner_tbe.TBEState == State:M_DLT_GS) {
+          enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+            out_msg.addr := tbe.tbeDeltaPair;
+            out_msg.Type := CoherenceResponseType:DATA;
+            out_msg.Sender := machineID;
+            out_msg.Destination := partner_tbe.L1_GetS_IDs;
+            out_msg.DataBlk := partner_entry.DataBlk;
+            out_msg.MessageSize := MessageSizeType:Response_Data;
+            out_msg.AckCount := 0;
+          }
+          DPRINTF(RubySlicc,
+                  "DeltaCache: short-circuit M_DLT_GS at 0x%x via 0x%x udte_\n",
+                  tbe.tbeDeltaPair, address);
+        }
         wakeUpBuffers(tbe.tbeDeltaPair);
         DPRINTF(RubySlicc, "DeltaPair undeltad (Cond4-EvictPartner): 0x%x and 0x%x\n",
                 address, tbe.tbeDeltaPair);
@@ -1013,27 +1146,34 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
     APPEND_TRANSITION_COMMENT(tbe.pendingAcks);
   }
 
-  // ECE757 DeltaCache Condition 4 scaffolding (on hold): send FWD_PARTNER_DLT
-  // to one upper holder of the partner so we can fetch the partner's
-  // ORIGINAL bytes for cross-address undelta during eviction.
-  action(rpd_requestPartnerDLTData, "rpd", desc="Send FWD_PARTNER_DLT to one of the partner's holders") {
+  // ECE757 DeltaCache Condition 4: broadcast FWD_PARTNER_DLT to all of
+  // the partner's upper holders so we can fetch the partner's ORIGINAL
+  // bytes for cross-address undelta during eviction. Robust to the
+  // stale-sharer race: any single chosen recipient could have raced into
+  // I/IM/IS/IS_I and would drop the request, leaving M_I_DLT stuck. With
+  // a broadcast, at least one of the still-stable sharers responds with
+  // DLT_DATA. cev_'s isDeltad gate makes it idempotent past the first
+  // arrival.
+  action(rpd_requestPartnerDLTData, "rpd", desc="Broadcast FWD_PARTNER_DLT to all of the partner's holders") {
     assert(is_valid(cache_entry));
     Entry partner_entry := getCacheEntry(cache_entry.deltaPair);
     if (is_valid(partner_entry)) {
-      if (partner_entry.CacheState == State:M) {
+      if (partner_entry.CacheState == State:SS &&
+          partner_entry.Sharers.count() > 0) {
+        enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
+          out_msg.addr := cache_entry.deltaPair;
+          out_msg.Type := CoherenceRequestType:FWD_PARTNER_DLT;
+          out_msg.Requestor := machineID;
+          out_msg.Destination := partner_entry.Sharers;
+          out_msg.MessageSize := MessageSizeType:Request_Control;
+        }
+      } else if (partner_entry.CacheState == State:MT) {
+        // Partner is exclusively held by one L1; only that L1 has the data.
         enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
           out_msg.addr := cache_entry.deltaPair;
           out_msg.Type := CoherenceRequestType:FWD_PARTNER_DLT;
           out_msg.Requestor := machineID;
           out_msg.Destination.add(partner_entry.Exclusive);
-          out_msg.MessageSize := MessageSizeType:Request_Control;
-        }
-      } if (partner_entry.CacheState == State:SS) {
-        enqueue(L1RequestL2Network_out, RequestMsg, to_l1_latency) {
-          out_msg.addr := cache_entry.deltaPair;
-          out_msg.Type := CoherenceRequestType:FWD_PARTNER_DLT;
-          out_msg.Requestor := machineID;
-          out_msg.Destination.add(partner_entry.Sharers.smallestElement(MachineType:L1Cache));
           out_msg.MessageSize := MessageSizeType:Request_Control;
         }
       } else {
@@ -1059,6 +1199,13 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
                   cache_entry.DataBlk, b_tbe.DataBlk,
                   b_tbe.tbeDeltaDirection);
       cache_entry.isDeltad := false;
+      // ECE757 DeltaCache: clear the TBE-side delta marker too, mirroring
+      // udte_'s pattern. Both halves of the pair are now raw (cache_entry
+      // for the survivor, b_tbe.DataBlk for the evicting line in M_I_DLT).
+      // tbeIsDeltad is the TBE-side analog of cache_entry.isDeltad, so
+      // dropping it here keeps the "isDeltad cleared on every undelta"
+      // invariant uniform across all unpair sites.
+      b_tbe.tbeIsDeltad := false;
       overrideMapping(mapTable, address, cache_entry.DataBlk);
       if (b_tbe.Dirty) {
         enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
@@ -1096,11 +1243,14 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   }
 
   // ECE757 DeltaCache: GETS landed on a delta'd line and B has at least one
-  // upper sharer. Send FWD_PARTNER_DLT (non-invalidating) to one of B's
-  // sharers; that sharer responds with raw B bytes via DLT_DATA at B's
-  // address, where Dlt_GS_Data_Same will pick it up.
+  // upper sharer. Broadcast FWD_PARTNER_DLT (non-invalidating) to ALL of
+  // B's sharers; the first responder's DLT_DATA runs sgss_ which ships
+  // raw B to the GETS requester and exits SS_DLT_GS. Subsequent arrivals
+  // land at S_MB or NP and drop via my (S_MB|NP, Dlt_WB_Data) handlers.
+  // Robust to the stale-sharer race: a single chosen recipient could
+  // have raced into I/IM/IS/IS_I and dropped the request.
   action(rgsd_requestRawFromBSharer, "rgsd",
-         desc="Direct GETS: FWD_PARTNER_DLT to one of B's sharers") {
+         desc="Direct GETS: broadcast FWD_PARTNER_DLT to all of B's sharers") {
     assert(is_valid(cache_entry));
     assert(cache_entry.isDeltad);
     assert(cache_entry.Sharers.count() > 0);
@@ -1108,7 +1258,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
       out_msg.addr := address;
       out_msg.Type := CoherenceRequestType:FWD_PARTNER_DLT;
       out_msg.Requestor := machineID;
-      out_msg.Destination.add(cache_entry.Sharers.smallestElement(MachineType:L1Cache));
+      out_msg.Destination := cache_entry.Sharers;
       out_msg.MessageSize := MessageSizeType:Request_Control;
     }
   }
@@ -1138,38 +1288,56 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   // address) has the L3 delta bytes. Reconstruct B into B's TBE buffer
   // (undeltaPair only writes the partner_blk argument), then ship raw B to
   // the GETS requestor recorded in B's TBE. Both L3 entries stay compressed.
+  //
+  // ECE757 DeltaCache: idempotent / stale-tolerant. If a concurrent unpair
+  // path (rdss_/uu_/adgmx_/udte_) already dissolved the pair before this
+  // DLT_DATA arrives, the cross-fetch is no longer needed -- the partner's
+  // M_DLT_GS short-circuit (added below in those actions if extended)
+  // would have already shipped data to the GETS requestor. Drop silently
+  // when the precondition doesn't hold instead of asserting.
   action(sgsx_undeltaAndShipCrossToGetSReq, "sgsx",
          desc="Cross GETS: undelta B in TBE buffer using A's raw + B's delta, ship") {
     assert(is_valid(cache_entry));
-    assert(cache_entry.isDeltad);
-    Entry b_entry := getCacheEntry(cache_entry.deltaPair);
-    assert(is_valid(b_entry));
-    assert(b_entry.isDeltad);
-    TBE b_tbe := TBEs[cache_entry.deltaPair];
-    assert(is_valid(b_tbe));
-    assert(b_tbe.L1_GetS_IDs.count() > 0);
-    peek(responseL2Network_in, ResponseMsg) {
-      // Load B's delta bytes into the scratch slot, then undeltaPair
-      // overwrites it with B's raw bytes. in_msg.DataBlk (A's raw) is
-      // read-only inside undeltaPair, so this leaves A's L3 entry intact.
-      b_tbe.DataBlk := b_entry.DataBlk;
-      undeltaPair(address, cache_entry.deltaPair,
-                  in_msg.DataBlk, b_tbe.DataBlk,
-                  b_entry.deltaDirection);
-      enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
-        out_msg.addr := cache_entry.deltaPair;
-        out_msg.Type := CoherenceResponseType:DATA;
-        out_msg.Sender := machineID;
-        out_msg.Destination := b_tbe.L1_GetS_IDs;
-        out_msg.DataBlk := b_tbe.DataBlk;
-        out_msg.MessageSize := MessageSizeType:Response_Data;
-        out_msg.AckCount := 0;
+    if (cache_entry.isDeltad) {
+      Entry b_entry := getCacheEntry(cache_entry.deltaPair);
+      TBE b_tbe := TBEs[cache_entry.deltaPair];
+      if (is_valid(b_entry) && b_entry.isDeltad &&
+          is_valid(b_tbe) && b_tbe.L1_GetS_IDs.count() > 0) {
+        peek(responseL2Network_in, ResponseMsg) {
+          // Load B's delta bytes into the scratch slot, then undeltaPair
+          // overwrites it with B's raw bytes. in_msg.DataBlk (A's raw) is
+          // read-only inside undeltaPair, so this leaves A's L3 entry intact.
+          b_tbe.DataBlk := b_entry.DataBlk;
+          undeltaPair(address, cache_entry.deltaPair,
+                      in_msg.DataBlk, b_tbe.DataBlk,
+                      b_entry.deltaDirection);
+          enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+            out_msg.addr := cache_entry.deltaPair;
+            out_msg.Type := CoherenceResponseType:DATA;
+            out_msg.Sender := machineID;
+            out_msg.Destination := b_tbe.L1_GetS_IDs;
+            out_msg.DataBlk := b_tbe.DataBlk;
+            out_msg.MessageSize := MessageSizeType:Response_Data;
+            out_msg.AckCount := 0;
+          }
+          // ECE757 DeltaCache: clear the L1_GetS_IDs after shipping so a
+          // duplicate DLT_DATA arrival (broadcast rmd_ sends to all
+          // partner sharers) doesn't ship the same response twice. The
+          // outer guard then short-circuits via L1_GetS_IDs.count() > 0.
+          // M_DLT_GS still exits via Unblock from the requester.
+          b_tbe.L1_GetS_IDs.clear();
+          // Wake B's address so the requestor's Unblock can land on
+          // {SS,M}_DLT_GS without bouncing.
+          wakeUpBuffers(cache_entry.deltaPair);
+          DPRINTF(RubySlicc, "DeltaCache GETS-Cross: A=0x%x B=0x%x undelta+ship\n",
+                  address, cache_entry.deltaPair);
+        }
+      } else {
+        DPRINTF(RubySlicc,
+                "DeltaCache: sgsx_ skipped at 0x%x (partner=0x%x b_entry_valid=%d b_tbe_valid=%d) -- stale or already shipped\n",
+                address, cache_entry.deltaPair,
+                is_valid(b_entry), is_valid(b_tbe));
       }
-      // Wake B's address so the requestor's Unblock can land on
-      // {SS,M}_DLT_GS without bouncing.
-      wakeUpBuffers(cache_entry.deltaPair);
-      DPRINTF(RubySlicc, "DeltaCache GETS-Cross: A=0x%x B=0x%x undelta+ship\n",
-              address, cache_entry.deltaPair);
     }
   }
 
@@ -1228,6 +1396,21 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
           wakeUpBuffers(cache_entry.deltaPair);
           DPRINTF(RubySlicc,
                   "DeltaCache: short-circuit M_DLT_GM at 0x%x via 0x%x adgmx_\n",
+                  cache_entry.deltaPair, address);
+        } else if (is_valid(partner_tbe) &&
+                   partner_tbe.TBEState == State:M_DLT_GS) {
+          enqueue(responseL2Network_out, ResponseMsg, l2_response_latency) {
+            out_msg.addr := cache_entry.deltaPair;
+            out_msg.Type := CoherenceResponseType:DATA;
+            out_msg.Sender := machineID;
+            out_msg.Destination := partner_tbe.L1_GetS_IDs;
+            out_msg.DataBlk := partner_entry.DataBlk;
+            out_msg.MessageSize := MessageSizeType:Response_Data;
+            out_msg.AckCount := 0;
+          }
+          wakeUpBuffers(cache_entry.deltaPair);
+          DPRINTF(RubySlicc,
+                  "DeltaCache: short-circuit M_DLT_GS at 0x%x via 0x%x adgmx_\n",
                   cache_entry.deltaPair, address);
         }
         DPRINTF(RubySlicc, "DeltaCache GETM-Cross: adopt raw B=0x%x, undelta A=0x%x\n",
