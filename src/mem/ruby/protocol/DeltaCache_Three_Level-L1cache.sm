@@ -1087,6 +1087,18 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
     l_popL2RequestQueue;
   }
 
+  // ECE757 DeltaCache: S_IL0 means we were S (L0 had it read-only) when
+  // a concurrent INV / L1_Replacement arrived and we forwarded the L0
+  // invalidation. L1's cache_entry.DataBlk is still valid raw bytes --
+  // L0 in S can't have modified anything. A FWD_PARTNER_DLT arriving in
+  // this transient is non-invalidating, so just ship the bytes and stay
+  // in S_IL0; the existing (S_IL0, L0_Ack, SS) transition will fire
+  // normally once L0 acknowledges.
+  transition(S_IL0, Fwd_Partner_Dlt) {
+    gd_sendDltDataToL2;
+    l_popL2RequestQueue;
+  }
+
   // FWD_GETM_DLT in S/M still needs to invalidate L0 first (it's a write).
   // Stall until the L0 evicts naturally or the existing L0-invalidation
   // flow completes. TODO: build out S_IL0_Dlt / M_IL0_Dlt transient states

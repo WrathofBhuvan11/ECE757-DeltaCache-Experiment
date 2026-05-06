@@ -170,7 +170,7 @@ def create_system(
                 clk_domain=clk_domain,
                 dcache=l0d_cache,
                 ruby_system=ruby_system,
-                #max_outstanding_requests=4,
+                max_outstanding_requests=4,
             )
 
             l0_cntrl.sequencer = cpu_seq
