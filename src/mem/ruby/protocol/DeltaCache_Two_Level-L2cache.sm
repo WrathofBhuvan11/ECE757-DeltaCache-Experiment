@@ -451,7 +451,17 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
             //   {SS,M}_DLT_GS. Undelta and ship to GETS requestor.
             // - Cond 1 (M_DLT_GM cross-fetch): partner TBE has no delta info
             //   and is parked in M_DLT_GM. Undelta and ship to GETM requestor.
-            if (is_valid(tbe) && tbe.tbeIsDeltad) {
+            if (is_valid(tbe) &&
+                (tbe.TBEState == State:SS_I_DLT ||
+                 tbe.TBEState == State:M_I_DLT)) {
+              // ECE757 DeltaCache: route by TBEState rather than tbeIsDeltad.
+              // udte_ clears tbeIsDeltad after the first DLT_DATA arrival,
+              // but with the rcm_ broadcast multiple sharers may ship
+              // DLT_DATA in succession; the later ones must still drain
+              // pendingAcks via drd_. udte_'s own (is_valid(tbe) &&
+              // tbe.tbeIsDeltad) guard makes it a safe no-op past the
+              // first arrival, and qq_ overwrites the TBE with raw bytes
+              // that should match across sharers.
               if ((getPendingAcks(tbe) - 1) == 0) {
                 trigger(Event:Dlt_Evict_Self_Last, in_msg.addr, cache_entry, tbe);
               } else {
@@ -493,7 +503,11 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
               // partner side) cover the relevant landing states.
               trigger(Event:Dlt_WB_Data, in_msg.addr, cache_entry, tbe);
             } else {
-              error("DLT_DATA arrived with no valid TBE or cache_entry");
+              // ECE757 DeltaCache: cache_entry already deallocated (NP) --
+              // a stale partner-cross-fetch DLT_DATA from before the entry
+              // was evicted. Funnel into Dlt_WB_Data; the (NP, Dlt_WB_Data)
+              // drop transition pops the response queue cleanly.
+              trigger(Event:Dlt_WB_Data, in_msg.addr, cache_entry, tbe);
             }
           } else if (in_msg.Type == CoherenceResponseType:ACK) {
             if ((getPendingAcks(tbe) - in_msg.AckCount) == 0) {
@@ -2371,7 +2385,9 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   // therefore redundant; drop it. (For M_I_DLT eviction flows, cev_ at
   // partner's address is the normal handler -- but if cev_ already ran
   // and the line has since transitioned to SS_MB, the same drop applies.)
-  transition({SS_MB, MT_MB, S_MB}, Dlt_WB_Data) {
+  // NP covers the case where the cache_entry was deallocated entirely
+  // before the late DLT_DATA arrived.
+  transition({NP, SS_MB, MT_MB, S_MB}, Dlt_WB_Data) {
     o_popIncomingResponseQueue;
   }
 
