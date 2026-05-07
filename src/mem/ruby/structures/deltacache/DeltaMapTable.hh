@@ -31,9 +31,11 @@ class DeltaMapTable : public SimObject {
     // it's no longer a worthwhile pairing candidate (no upper sharer ever
     // re-anchored its content), so drop it from the map table.
     void clearMapping(Addr addr, const DataBlock& blk);
+    int pair_count; // For tracking the number of matched pairs
+    int l3_valid_count; // For tracking the number of lines that are valid in L3 (i.e., ineligible for pairing)
 
   private:
-    int pair_count; // For tracking the number of matched pairs
+    
     int m_block_size;
     int m_table_entries; // table size
     std::vector<Addr> m_direct_map_table; //the map table of m_table_entries size
@@ -61,6 +63,38 @@ inline void
 recordMappingVoid(DeltaMapTable &table, Addr addr, const DataBlock &blk)
 {
     (void)table.recordMapping(addr, blk);
+}
+
+inline void
+decPairCount(DeltaMapTable &table)
+{
+    table.pair_count--;
+    inform("ECE757 DEC Counts: pairs=%d l3_valid=%d\n",
+           table.pair_count, table.l3_valid_count);
+}
+
+inline void
+incPairCount(DeltaMapTable &table)
+{
+    table.pair_count++;
+    inform("ECE757 INC Counts: pairs=%d l3_valid=%d\n",
+           table.pair_count, table.l3_valid_count);
+}
+
+inline void
+incL3ValidCount(DeltaMapTable &table)
+{
+    table.l3_valid_count++;
+    //inform("ECE757 L3INC Counts: pairs=%d l3_valid=%d\n",
+    //       table.pair_count, table.l3_valid_count);
+}
+
+inline void
+decL3ValidCount(DeltaMapTable &table)
+{
+    table.l3_valid_count--;
+    //inform("ECE757 L3DEC Counts: pairs=%d l3_valid=%d\n",
+    //       table.pair_count, table.l3_valid_count);
 }
 
 inline void overrideMapping(DeltaMapTable& table, Addr addr, const DataBlock& blk) {

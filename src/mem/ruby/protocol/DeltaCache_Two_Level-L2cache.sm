@@ -49,6 +49,10 @@ void clearMapping(DeltaMapTable * table, Addr addr, DataBlock block), external="
 bool computeAndStoreDelta(Addr a_addr, Addr b_addr, DataBlock a_blk, DataBlock b_blk), external="yes";
 void undeltaPair(Addr known_addr, Addr partner_addr, DataBlock known_blk, DataBlock partner_blk, bool partner_dir), external="yes";
 void recordMappingVoid(DeltaMapTable * table, Addr addr, DataBlock block), external="yes";
+void decPairCount(DeltaMapTable * table), external="yes";
+void incPairCount(DeltaMapTable * table), external="yes";
+void incL3ValidCount(DeltaMapTable * table), external="yes";
+void decL3ValidCount(DeltaMapTable * table), external="yes";
 
 machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
  : CacheMemory * L2cache;
@@ -726,6 +730,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
           undeltaPair(address, cache_entry.deltaPair,
                       cache_entry.DataBlk, partner_entry.DataBlk,
                       partner_entry.deltaDirection);
+          decPairCount(mapTable);
           cache_entry.isDeltad := false;
           partner_entry.isDeltad := false;
           // Re-add both lines to the map table: they're raw and resident,
@@ -822,6 +827,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
         undeltaPair(address, cache_entry.deltaPair,
                     cache_entry.DataBlk, partner_entry.DataBlk,
                     partner_entry.deltaDirection);
+        decPairCount(mapTable);
         cache_entry.isDeltad := false;
         partner_entry.isDeltad := false;
       } else {
@@ -963,6 +969,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
           undeltaPair(address, cache_entry.deltaPair,
                       cache_entry.DataBlk, b_entry.DataBlk,
                       b_entry.deltaDirection);
+          decPairCount(mapTable);
           cache_entry.isDeltad := false;
           b_entry.isDeltad := false;
           // Re-add A to map table so it's eligible for future pairings.
@@ -1033,6 +1040,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
       undeltaPair(address, cache_entry.deltaPair,
                   cache_entry.DataBlk, partner_entry.DataBlk,
                   partner_entry.deltaDirection);
+      decPairCount(mapTable);
       cache_entry.isDeltad := false;
       partner_entry.isDeltad := false;
       DPRINTF(RubySlicc, "DeltaPair undeltad (legacy udcur): 0x%x and 0x%x\n",
@@ -1064,6 +1072,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
         undeltaPair(address, tbe.tbeDeltaPair,
                     tbe.DataBlk, partner_entry.DataBlk,
                     partner_entry.deltaDirection);
+        decPairCount(mapTable);
         partner_entry.isDeltad := false;
         overrideMapping(mapTable, tbe.tbeDeltaPair, partner_entry.DataBlk);
         // ECE757 DeltaCache: short-circuit a partner stuck in M_DLT_GM
@@ -1198,6 +1207,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
       undeltaPair(address, cache_entry.deltaPair,
                   cache_entry.DataBlk, b_tbe.DataBlk,
                   b_tbe.tbeDeltaDirection);
+      decPairCount(mapTable);
       cache_entry.isDeltad := false;
       // ECE757 DeltaCache: clear the TBE-side delta marker too, mirroring
       // udte_'s pattern. Both halves of the pair are now raw (cache_entry
@@ -1368,6 +1378,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
         undeltaPair(address, cache_entry.deltaPair,
                     cache_entry.DataBlk, partner_entry.DataBlk,
                     partner_entry.deltaDirection);
+        decPairCount(mapTable);
         cache_entry.isDeltad := false;
         partner_entry.isDeltad := false;
         overrideMapping(mapTable, cache_entry.deltaPair, partner_entry.DataBlk);
@@ -1495,6 +1506,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
             partner_entry.deltaDirection := true;   // A = B + delta (ADD)
           }
           DPRINTF(RubySlicc, "DeltaPair set: 0x%x <-> 0x%x\n", address, partner);
+          incPairCount(mapTable);
         }
       } else {
         // Partner was evicted before we could pair. Re-store ourselves in
@@ -1779,12 +1791,14 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
   action(qq_allocateL2CacheBlock, "\q", desc="Set L2 cache tag equal to tag of block B.") {
     if (is_invalid(cache_entry)) {
       set_cache_entry(L2cache.allocate(address, new Entry));
+      incL3ValidCount(mapTable);
     }
   }
 
   action(rr_deallocateL2CacheBlock, "\r", desc="Deallocate L2 cache block.  Sets the cache to not present, allowing a replacement in parallel with a fetch.") {
     L2cache.deallocate(address);
     unset_cache_entry();
+    decL3ValidCount(mapTable);
   }
 
   action(t_sendWBAck, "t", desc="Send writeback ACK") {
@@ -2595,7 +2609,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(MT_IIB, {WB_Data, WB_Data_clean}, MT_SB) {
     m_writeDataToCache;
-    //recordDelta;
+    recordDelta;
     o_popIncomingResponseQueue;
   }
 
@@ -2608,6 +2622,7 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
 
   transition(MT_SB, Unblock, SS) {
     nnu_addSharerFromUnblock;
+    //recordDelta; throwing deadlocks
     k_popUnblockQueue;
     kd_wakeUpDependents;
   }

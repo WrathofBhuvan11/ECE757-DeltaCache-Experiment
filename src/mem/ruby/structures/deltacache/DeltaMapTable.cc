@@ -12,6 +12,7 @@ DeltaMapTable::DeltaMapTable(const Params &p)
     // Note: Use gem5's warn/inform instead of std::cout for better logging
     inform("DeltaMapTable: Skeleton Initialized for ECE757 DeltaCache\n");
     pair_count = 0;
+    l3_valid_count = 0;
 }
 
 //uint64_t
@@ -77,9 +78,9 @@ Addr DeltaMapTable::recordMapping(Addr addr, const DataBlock& blk) {
         Addr candidate_addr = m_direct_map_table[index];
 
         if (candidate_addr != addr) {
-            pair_count++;
-            inform("ECE757 Delta Match: Sig [0x%x] | Index %d | Line 0x%lx matched Candidate 0x%lx, Pair Count: %d\n",
-                   sig_val, index, addr, candidate_addr, pair_count);
+            //pair_count++;
+            inform("ECE757 Delta Match: Sig [0x%x] | Index %d | Line 0x%lx matched Candidate 0x%lx\n",
+                   sig_val, index, addr, candidate_addr);
 
             // Slot is consumed by the pairing.
             m_valid_bits[index] = false;
