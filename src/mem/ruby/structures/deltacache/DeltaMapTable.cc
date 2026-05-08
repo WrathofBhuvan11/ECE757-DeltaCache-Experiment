@@ -59,7 +59,7 @@ DeltaMapTable::generateMapValue(const DataBlock& blk)
     }
         signature ^= (signature >> 8);
     // Mask to exactly 10 bits (0 to 1023)
-    return signature % 0x3FF;
+    return signature % 0x3F;
 }
 
 
@@ -72,7 +72,7 @@ Addr DeltaMapTable::recordMapping(Addr addr, const DataBlock& blk) {
     uint64_t sig_val = generateMapValue(blk);
 
     // Since sig_val is now 10 bits, ensure m_table_entries matches (1024)
-    uint32_t index = sig_val % m_table_entries;
+    uint32_t index = sig_val % 0x3F;
 
     if (m_valid_bits[index]) {
         Addr candidate_addr = m_direct_map_table[index];

@@ -1478,8 +1478,12 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
         //     (which still has isDeltad=true and the now-stale pointer
         //     back). Future undelta on the orphaned partner reads garbage.
         if (cache_entry.CacheState == State:IM ||
-            partner_entry.CacheState != State:SS ||
-            partner_entry.isDeltad) {
+           (partner_entry.CacheState != State:SS &&
+            partner_entry.CacheState != State:M) ||
+            partner_entry.isDeltad ||
+            ((cache_entry.CacheState == State:MT ||
+            cache_entry.CacheState == State:M) &&
+            partner_entry.CacheState == State:M)) {
           overrideMapping(mapTable, address, cache_entry.DataBlk);
           DPRINTF(RubySlicc,
                   "DeltaCache: skipped pairing 0x%x (state=%s) <-> 0x%x (state=%s, dlt=%d) -- unsafe\n",

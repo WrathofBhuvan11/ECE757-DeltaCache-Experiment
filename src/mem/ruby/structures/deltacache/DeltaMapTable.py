@@ -10,4 +10,4 @@ class DeltaMapTable(SimObject):
 
     block_size = Param.Int(64, "Default line size")
     latency = Param.Cycles(0, "Map table lookup latency")
-    table_entries = Param.Int(1024, "Number of entries in the Map Table")
+    table_entries = Param.Int(64, "Number of entries in the Map Table")
