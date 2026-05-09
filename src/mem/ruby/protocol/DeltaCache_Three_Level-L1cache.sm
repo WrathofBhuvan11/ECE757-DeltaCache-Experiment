@@ -1109,34 +1109,33 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
     z2_stallAndWaitL2Queue;
   }
 
-  // ECE757 DeltaCache: IM means we've issued our own GETM and don't have
-  // the line. The FWD_GETM_DLT reached us either via a stale-sharer race
-  // (we were a sharer at FWD-send time, then evicted + re-stored) or via
-  // the SM -> SM_IL0 -> IM L0-invalidation chain. Either way we have no
-  // data to ship. Stalling deadlocks: L3 is parked in SS_DLT_GM_X waiting
-  // on our DLT_DATA, *and* it's also stalling our own GETM behind that
-  // same SS_DLT_GM_X transient, so neither side advances.
+  // ECE757 DeltaCache: stale-sharer race for FWD_GETM_DLT (mirror of the
+  // existing ({I, IS, IS_I, IM}, Fwd_Partner_Dlt) drop pattern, but ACK
+  // instead of silently dropping because L3's SS_DLT_GM_X ACK accounting
+  // requires every targeted sharer to respond).
   //
-  // Send an ACK with AckCount=1 instead, behaving like an INV recipient.
-  // L3's pendingAcks drains to 0, Ack_all fires, and SS_DLT_GM_X completes
-  // by shipping cache_entry.DataBlk. This is correct iff the partner's
-  // own undelta path (rdss_ / uu_ / udte_ / cev_ / crm_) has already run
-  // and overwritten the L3 entry's DataBlk with raw bytes -- which is the
-  // common case once the pair starts dissolving. The L3 Ack_all transition
-  // asserts !cache_entry.isDeltad to catch the (currently unhandled) case
-  // where neither path has run.
-  transition(IM, Fwd_GETM_Dlt) {
-    fi_sendInvAck;
-    l_popL2RequestQueue;
-  }
-
-  // ECE757 DeltaCache: same stale-sharer race for FWD_GETM_DLT in
-  // I/IS/IS_I. With the rcm_ broadcast, every sharer gets a copy, so
-  // sharers that already evicted (now in I) or are mid-fetch for a
-  // different access (IS/IS_I) receive the request. They have no data
-  // to ship -- ack with AckCount=1 just like the IM handler so L3's
-  // pendingAcks drains.
-  transition({I, IS, IS_I}, Fwd_GETM_Dlt) {
+  // We were a sharer when L3 sent FWD_GETM_DLT, then transitioned out of
+  // the data-bearing state before the message arrived. Possible chains:
+  //   (a) SS -> L1_Replacement -> SINK_WB_ACK -> I (optionally I -> IM
+  //       via a fresh L0 store, or I -> IS via a fresh L0 load; or
+  //       IS_I via an Inv during IS).
+  //   (b) IM-specific: SS -> Store -> SM -> (L0_Invalidate_Else for
+  //       FWD_GETM_DLT) -> SM_IL0 -> IM. We have no data either.
+  //
+  // Send an ACK with AckCount=1 (fi_sendInvAck), behaving like an INV
+  // recipient. L3's pendingAcks drains to 0, Ack_all fires, and
+  // SS_DLT_GM_X completes by shipping cache_entry.DataBlk. This is correct
+  // iff the partner's own undelta path (rdss_ / uu_ / udte_ / cev_ / crm_)
+  // has already run and overwritten the L3 entry's DataBlk with raw bytes
+  // -- the common case once the pair starts dissolving. The L3 Ack_all
+  // transition asserts !cache_entry.isDeltad to catch the (currently
+  // unhandled) case where neither path has run.
+  //
+  // v10 (May 2026): extended from IM-only to {I, IS, IS_I, IM} after a
+  // 6-core ruby random panic on (IS, Fwd_GETM_Dlt) -- the same race that
+  // motivated the IM handler exists in I, IS, IS_I as well, just at a
+  // narrower window that low-core-count workloads don't hit.
+  transition({I, IS, IS_I, IM}, Fwd_GETM_Dlt) {
     fi_sendInvAck;
     l_popL2RequestQueue;
   }

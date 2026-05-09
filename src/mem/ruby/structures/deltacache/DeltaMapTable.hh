@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include "base/logging.hh"
+#include "base/statistics.hh"
 #include "mem/ruby/common/Address.hh"
 #include "mem/ruby/common/DataBlock.hh"
 #include "params/DeltaMapTable.hh"
@@ -12,6 +13,9 @@
 
 namespace gem5 {
 namespace ruby {
+
+// Forward decl to avoid pulling RubySystem.hh into widely-included header.
+class RubySystem;
 
 class DeltaMapTable : public SimObject {
   public:
@@ -31,16 +35,72 @@ class DeltaMapTable : public SimObject {
     // it's no longer a worthwhile pairing candidate (no upper sharer ever
     // re-anchored its content), so drop it from the map table.
     void clearMapping(Addr addr, const DataBlock& blk);
-    int pair_count; // For tracking the number of matched pairs
-    int l3_valid_count; // For tracking the number of lines that are valid in L3 (i.e., ineligible for pairing)
+
+    // ECE757: pair lifecycle hooks invoked from SLICC actions in
+    // L2cache.sm. incPairCount fires inside recordDelta when a pair
+    // is successfully created; decPairCount fires inside undelta
+    // actions (uu_, rdss_, adgmx_, crm_, udte_, cev_) when a pair
+    // is dissolved. Together they let us track the number of
+    // currently-active pairs, which drives the LLC compression-ratio
+    // statistic.
+    void incPairCount();
+    void decPairCount();
+
+    // ECE757 v17: recover a partner line's raw bytes via the system-wide
+    // functional-read mechanism. Used by L2cache.sm's functionalWrite
+    // to fix the partner's L3 entry before the pair is dissolved -- the
+    // v12 fix only cleared isDeltad on partner but left partner.DataBlk
+    // as delta bytes, which subsequent demand reads then shipped as raw
+    // (the daxpy panic at tick ~139302). Walks all controllers + memory
+    // and writes the result into target_blk.
+    //
+    // Returns true if any controller responded with data; false means
+    // the partner address is not present anywhere in the system (rare;
+    // caller may still want to clear isDeltad to break the dangling
+    // pair pointer).
+    bool recoverPartnerRaw(Addr partner_addr, DataBlock &target_blk);
 
   private:
-    
+    int pair_count;        // legacy lifetime hit counter (for log lines)
+    int active_pairs;      // ECE757: pairs currently live in L3
+    int peak_active_pairs; // ECE757: high-water mark of active_pairs
     int m_block_size;
-    int m_table_entries; // table size
-    std::vector<Addr> m_direct_map_table; //the map table of m_table_entries size
-    std::vector<bool> m_valid_bits; //entry valid or not
+    int m_table_entries;
+    // ECE757 v17: RubySystem ref for recoverPartnerRaw().
+    RubySystem *m_ruby_system;
+    std::vector<Addr> m_direct_map_table;
+    std::vector<bool> m_valid_bits;
     uint64_t generateMapValue(const DataBlock& blk);
+
+    // ECE757: gem5 statistics group. Visible in stats.txt under the
+    // DeltaMapTable's instance path (typically system.ruby.l2_cntrl0.mapTable).
+    struct DeltaMapTableStats : public statistics::Group {
+        DeltaMapTableStats(statistics::Group *parent);
+        statistics::Scalar pairsCreated;       // recordMapping match -> pair
+        statistics::Scalar pairsDissolved;     // undelta unpaired a pair
+        statistics::Scalar mapStoreEvents;     // recordMapping no-match (stored self)
+        statistics::Scalar mapOverrideEvents;  // overrideMapping calls
+        statistics::Scalar mapClearEvents;     // clearMapping calls
+        // pairHitRate = pairsCreated / (pairsCreated + mapStoreEvents)
+        statistics::Formula pairHitRate;
+        // compressionRatioInsertion: assuming a properly decoupled tag/data
+        // array (each pair occupies 1 data slot instead of 2), this is the
+        // ratio of (lines ever inserted) / (data slots needed). Range
+        // [1.0, 2.0]; 1.0 = nothing paired, 2.0 = every line paired.
+        statistics::Formula compressionRatioInsertion;
+        // activePairsAtEnd: snapshot of pairs still active when stats dump.
+        statistics::Scalar activePairsAtEnd;
+        // peakActivePairs: high-water mark of simultaneously-live pairs.
+        // Better proxy for steady-state L3 compression than the
+        // insertion-time formula, because pairs get dissolved.
+        statistics::Scalar peakActivePairs;
+        // pairSurvivalRate = (pairsCreated - pairsDissolved) / pairsCreated
+        // Fraction of created pairs that survived to stats dump. 1.0 means
+        // pairs are durable; values near 0 mean we're churning pairs and
+        // not getting real compression.
+        statistics::Formula pairSurvivalRate;
+    };
+    DeltaMapTableStats stats;
 };
 
 /**
@@ -65,44 +125,32 @@ recordMappingVoid(DeltaMapTable &table, Addr addr, const DataBlock &blk)
     (void)table.recordMapping(addr, blk);
 }
 
-inline void
-decPairCount(DeltaMapTable &table)
-{
-    table.pair_count--;
-    inform("ECE757 DEC Counts: pairs=%d l3_valid=%d\n",
-           table.pair_count, table.l3_valid_count);
-}
-
-inline void
-incPairCount(DeltaMapTable &table)
-{
-    table.pair_count++;
-    inform("ECE757 INC Counts: pairs=%d l3_valid=%d\n",
-           table.pair_count, table.l3_valid_count);
-}
-
-inline void
-incL3ValidCount(DeltaMapTable &table)
-{
-    table.l3_valid_count++;
-    //inform("ECE757 L3INC Counts: pairs=%d l3_valid=%d\n",
-    //       table.pair_count, table.l3_valid_count);
-}
-
-inline void
-decL3ValidCount(DeltaMapTable &table)
-{
-    table.l3_valid_count--;
-    //inform("ECE757 L3DEC Counts: pairs=%d l3_valid=%d\n",
-    //       table.pair_count, table.l3_valid_count);
-}
-
 inline void overrideMapping(DeltaMapTable& table, Addr addr, const DataBlock& blk) {
     table.overrideMapping(addr, blk);
 }
 
 inline void clearMapping(DeltaMapTable& table, Addr addr, const DataBlock& blk) {
     table.clearMapping(addr, blk);
+}
+
+// ECE757: pair lifecycle hooks. Called from SLICC actions in L2cache.sm.
+inline void incPairCount(DeltaMapTable& table) { table.incPairCount(); }
+inline void decPairCount(DeltaMapTable& table) { table.decPairCount(); }
+
+// ECE757 v17: SLICC global wrapper for partner-raw recovery.
+inline bool
+recoverPartnerRaw(DeltaMapTable &table, Addr partner_addr,
+                  DataBlock &target_blk)
+{
+    return table.recoverPartnerRaw(partner_addr, target_blk);
+}
+
+// Void variant for SLICC call sites that discard the bool result.
+inline void
+recoverPartnerRawVoid(DeltaMapTable &table, Addr partner_addr,
+                      DataBlock &target_blk)
+{
+    (void)table.recoverPartnerRaw(partner_addr, target_blk);
 }
 
 /**
