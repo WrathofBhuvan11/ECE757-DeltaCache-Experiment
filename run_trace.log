@@ -1,0 +1,70 @@
+Global frequency set at 1000000000 ticks per second
+warn: rounding error > tolerance
+    1.250000 rounded to 1
+warn: rounding error > tolerance
+    1.250000 rounded to 1
+warn: rounding error > tolerance
+    1.250000 rounded to 1
+warn: rounding error > tolerance
+    1.250000 rounded to 1
+warn: rounding error > tolerance
+    1.250000 rounded to 1
+warn: rounding error > tolerance
+    1.250000 rounded to 1
+warn: rounding error > tolerance
+    1.250000 rounded to 1
+warn: rounding error > tolerance
+    1.250000 rounded to 1
+src/mem/dram_interface.cc:690: warn: DRAM device capacity (8192 Mbytes) does not match the address range assigned (512 Mbytes)
+src/base/statistics.hh:279: warn: One of the stats is a legacy stat. Legacy stat is a stat that does not belong to any statistics::Group. Legacy stat is deprecated.
+gem5 Simulator System.  https://www.gem5.org
+gem5 is copyrighted software; use the --copyright option for details.
+
+gem5 version 25.1.0.0
+gem5 compiled Apr 25 2026 19:10:00
+gem5 started Apr 25 2026 19:56:29
+gem5 executing on DESKTOP-D0O9BA6, pid 161115
+command line: ./build/X86_MESI_Three_Level/gem5.opt --debug-flags=RubyGenerated,RubySequencer,RubyProtocol --debug-start=75000 --debug-file=debug.out configs/example/ruby_random_test.py --ruby --num-cpus=4 --num-l2caches=4 --num-l3caches=1 --l1d_size=32kB --l1i_size=32kB --l2_size=256kB --l3_size=2MB --maxloads=500000 --protocol=MESI_Three_Level --network=simple --topology=Pt2Pt --vcs-per-vnet=4
+
+**************IMPORTANT*******************************
+This gem5 binary is configured with multiple protocols.
+To use this gem5 binary, you must use the standard library.
+The Ruby.py file is deprecated.
+You can use --protocol to specify the protocol you want to use.
+IMPORTANT: THIS WILL BE REMOVED IN THE FUTURE.
+src/mem/ruby/system/Sequencer.cc:707: warn: Replacement policy updates recently became the responsibility of SLICC state machines. Make sure to setMRU() near callbacks in .sm files!
+gem5 has encountered a segmentation fault!
+
+--- BEGIN LIBC BACKTRACE ---
+./build/X86_MESI_Three_Level/gem5.opt(_ZN4gem515print_backtraceEv+0x30)[0x5611478eff00]
+./build/X86_MESI_Three_Level/gem5.opt(+0x14065a5)[0x5611479195a5]
+/lib/x86_64-linux-gnu/libc.so.6(+0x45330)[0x775071845330]
+./build/X86_MESI_Three_Level/gem5.opt(_ZN4gem54ruby8SubBlock17internalMergeFromERKNS0_9DataBlockE+0x3b)[0x56114827699b]
+./build/X86_MESI_Three_Level/gem5.opt(_ZN4gem54ruby9Sequencer11hitCallbackEPNS0_16SequencerRequestERNS0_9DataBlockEbNS0_11MachineTypeEbNS_6CyclesES7_S7_b+0x213)[0x56114826aec3]
+./build/X86_MESI_Three_Level/gem5.opt(_ZN4gem54ruby9Sequencer13writeCallbackEmRNS0_9DataBlockEbNS0_11MachineTypeENS_6CyclesES5_S5_b+0x149)[0x56114826ef89]
+./build/X86_MESI_Three_Level/gem5.opt(_ZN4gem54ruby16MESI_Three_Level18L0Cache_Controller16f_flush_completeERPNS1_11L0Cache_TBEERPNS1_13L0Cache_EntryEm+0x6c)[0x5611481743fc]
+./build/X86_MESI_Three_Level/gem5.opt(_ZN4gem54ruby16MESI_Three_Level18L0Cache_Controller18doTransitionWorkerENS1_13L0Cache_EventENS1_13L0Cache_StateERS4_RPNS1_11L0Cache_TBEERPNS1_13L0Cache_EntryEm+0x186)[0x5611482151f6]
+./build/X86_MESI_Three_Level/gem5.opt(_ZN4gem54ruby16MESI_Three_Level18L0Cache_Controller12doTransitionENS1_13L0Cache_EventEPNS1_13L0Cache_EntryEPNS1_11L0Cache_TBEEm+0xa8)[0x561148216328]
+./build/X86_MESI_Three_Level/gem5.opt(_ZN4gem54ruby16MESI_Three_Level18L0Cache_Controller6wakeupEv+0x185e)[0x5611481810ce]
+./build/X86_MESI_Three_Level/gem5.opt(+0x1d5f706)[0x561148272706]
+./build/X86_MESI_Three_Level/gem5.opt(_ZN4gem510EventQueue10serviceOneEv+0xb7)[0x561147907837]
+./build/X86_MESI_Three_Level/gem5.opt(_ZN4gem59doSimLoopEPNS_10EventQueueE+0x70)[0x5611479433d0]
+./build/X86_MESI_Three_Level/gem5.opt(_ZN4gem58simulateEm+0x25e)[0x561147943b6e]
+./build/X86_MESI_Three_Level/gem5.opt(+0x265ebd2)[0x561148b71bd2]
+./build/X86_MESI_Three_Level/gem5.opt(+0xb72bba)[0x561147085bba]
+/lib/x86_64-linux-gnu/libpython3.12.so.1.0(+0x1df4b8)[0x775072bdf4b8]
+/lib/x86_64-linux-gnu/libpython3.12.so.1.0(_PyObject_Call+0x5c)[0x775072b8485c]
+/lib/x86_64-linux-gnu/libpython3.12.so.1.0(_PyEval_EvalFrameDefault+0x8ec)[0x775072b19dec]
+/lib/x86_64-linux-gnu/libpython3.12.so.1.0(PyEval_EvalCode+0x20f)[0x775072ca091f]
+/lib/x86_64-linux-gnu/libpython3.12.so.1.0(+0x29c8b0)[0x775072c9c8b0]
+/lib/x86_64-linux-gnu/libpython3.12.so.1.0(+0x1dfadc)[0x775072bdfadc]
+/lib/x86_64-linux-gnu/libpython3.12.so.1.0(PyObject_Vectorcall+0x5c)[0x775072b82b2c]
+/lib/x86_64-linux-gnu/libpython3.12.so.1.0(_PyEval_EvalFrameDefault+0x40ee)[0x775072b1d5ee]
+./build/X86_MESI_Three_Level/gem5.opt(+0x140e279)[0x561147921279]
+./build/X86_MESI_Three_Level/gem5.opt(main+0x218)[0x56114701cf78]
+/lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca)[0x77507182a1ca]
+/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b)[0x77507182a28b]
+./build/X86_MESI_Three_Level/gem5.opt(_start+0x25)[0x561147071e65]
+--- END LIBC BACKTRACE ---
+For more info on how to address this issue, please visit https://www.gem5.org/documentation/general_docs/common-errors/ 
+
