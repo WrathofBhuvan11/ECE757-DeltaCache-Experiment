@@ -1040,7 +1040,20 @@ machine(MachineType:L2Cache, "MESI Directory L2 Cache CMP")
         DPRINTF(RubySlicc, "DeltaPair undeltad (Cond4-EvictPartner): 0x%x and 0x%x\n",
                 address, tbe.tbeDeltaPair);
       }
-      tbe.tbeIsDeltad := false;
+      // ECE757 v18: do NOT clear tbe.tbeIsDeltad here. rcm_ broadcasts
+      // FWD_GETM_DLT to ALL sharers (intentional, see the rcm_ comment),
+      // so multiple DLT_DATAs can arrive in SS_I_DLT. The first one runs
+      // the body above and clears partner_entry.isDeltad; subsequent ones
+      // must stay routed into Dlt_Evict_Self_Partial/_Last via the
+      // dispatch's `tbe.tbeIsDeltad` guard so they drain the pendingAcks
+      // counter and pop the queue. The inner partner_entry.isDeltad guard
+      // above already makes this body idempotent (no-ops on every call
+      // after the first). Clearing tbe.tbeIsDeltad here -- the previous
+      // behavior -- caused the dispatch to fall through to the panic at
+      // L2cache.sm:566 the second time DLT_DATA landed in SS_I_DLT,
+      // because the cache_entry had already been deallocated by rr_ at
+      // eviction time. The flag goes away naturally with the TBE on
+      // M_I -> Mem_Ack -> NP -> s_deallocateTBE.
     }
   }
 
